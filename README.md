@@ -64,6 +64,26 @@ bash start.sh       # 启动，默认 0.0.0.0:8710
 cat data/admin_key.txt
 ```
 
+## 添加账号（各平台凭据方式）
+
+面板 → **账号池** → **＋新增账号** → 选择所属平台 → 凭据输入方式会**按平台自动限定** → 粘贴凭据 → **保存并自动检测**（保存后会立即调上游检测账号有效性）。
+
+| 平台 | 凭据方式 | 说明 |
+|---|---|---|
+| Tabbit 国内版 `tabbit-domestic` | Cookie（或手机验证码） | 上游 `web.tabbit.com`；短信加号走面板「手机验证码添加账号」 |
+| Tabbit 国际版 `tabbit-intl` | **仅 Cookie** | 上游 `web.tabbit.ai`，面板短信通道只支持国内版域名；该平台需配置可用的 socks5 代理后访问 |
+| Trae `trae` | 浏览器登录引导 / Cookie | 走本地 Trae 中转（`openai_compat`），也可用「Trae 账号授权」助手登录 |
+| WorkBuddy `workbuddy` | 浏览器授权引导 / JSON | OAuth 授权后凭据自动入库 |
+| Loomy `loomy` | Token / JSON | 讯飞 Loomy 会话 Token |
+
+**Cookie 怎么取**：
+
+1. 浏览器登录对应平台（国际版需代理环境）
+2. F12 → Network → 任选一个 XHR 请求 → Request Headers → 复制 **Cookie 整行**（形如 `a=1; b=2; session=...`）
+3. 面板新增账号粘贴，保持 Cookie 方式提交
+
+> Cookie 会过期，失效后在账号行点「编辑」粘贴新 Cookie 即可。凭据保存在本地 SQLite（`data/`），不会上传。
+
 ## 环境变量（.env）
 
 | 变量 | 说明 |
