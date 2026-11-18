@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS accounts (
  name TEXT NOT NULL, credential TEXT NOT NULL, credential_type TEXT DEFAULT 'cookie', status TEXT DEFAULT 'unknown',
  status_msg TEXT DEFAULT '', member_level TEXT DEFAULT '', quota_pct REAL, quota_json TEXT DEFAULT '{}',
  user_info TEXT DEFAULT '{}', check_at TEXT, last_used_at TEXT, request_count INTEGER DEFAULT 0,
+ inflight INTEGER DEFAULT 0, inflight_at REAL DEFAULT 0,
  enabled INTEGER DEFAULT 1, created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
@@ -106,6 +107,11 @@ def init_db():
         cols = {r[1] for r in db.execute("PRAGMA table_info(platforms)").fetchall()}
         if "proxy_enabled" not in cols:
             db.execute("ALTER TABLE platforms ADD COLUMN proxy_enabled INTEGER DEFAULT 1")
+        # 老库迁移：accounts.inflight 并发占位（幂等）
+        acols = {r[1] for r in db.execute("PRAGMA table_info(accounts)").fetchall()}
+        if "inflight" not in acols:
+            db.execute("ALTER TABLE accounts ADD COLUMN inflight INTEGER DEFAULT 0")
+            db.execute("ALTER TABLE accounts ADD COLUMN inflight_at REAL DEFAULT 0")
         # 测试缓存与工具能力配置的默认键
         db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('proxy_test_url','')")
         db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tool_websearch_keys','{}')")
@@ -146,20 +152,41 @@ def update_account(account_id, fields):
         db.execute("UPDATE accounts SET " + ",".join(f"{k}=?" for k in fields) + " WHERE id=?", (*fields.values(), account_id))
         return rowdict(db.execute("SELECT * FROM accounts WHERE id=?", (account_id,)).fetchone())
 
-def pick_account(platform_id):
-    """原子领取最久未用账号（BEGIN IMMEDIATE 双进程安全，杜绝热点账号）。"""
+def pick_account(platform_id, max_inflight=1):
+    """原子领取最久未用账号（BEGIN IMMEDIATE 双进程安全，杜绝热点账号）。
+
+    只领取 inflight < max_inflight 的账号；领取即把 inflight 加 1
+    （调用方在请求结束后必须调 release_account 归还）。
+    inflight_at 记录占用时间，崩溃残留（>10 分钟未归还）自动释放。
+    """
+    now = time.time()
+    stale_before = now - 600  # 10 分钟未归还视为崩溃残留
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute(
             "SELECT * FROM accounts WHERE platform_id=? AND enabled=1 AND status='active' "
-            "ORDER BY COALESCE(last_used_at,'') ASC, id ASC LIMIT 1",
-            (platform_id,),
+            "AND (COALESCE(inflight,0) < ? OR COALESCE(inflight_at,0) < ?) "
+            "ORDER BY COALESCE(inflight,0) ASC, COALESCE(inflight_at,0) ASC, "
+            "COALESCE(last_used_at,'') ASC, id ASC LIMIT 1",
+            (platform_id, max_inflight, stale_before),
         ).fetchone()
         if not row:
             return None
-        db.execute("UPDATE accounts SET last_used_at=? WHERE id=?",
-                   (time.strftime("%Y-%m-%d %H:%M:%S"), row["id"]))
-        return dict(row)
+        # 崩溃残留（inflight_at 超期）选中后重置计数为 1，避免累计
+        db.execute(
+            "UPDATE accounts SET inflight=CASE WHEN COALESCE(inflight_at,0) < ? THEN 1 ELSE COALESCE(inflight,0)+1 END, "
+            "inflight_at=?, last_used_at=? WHERE id=?",
+            (stale_before, now, time.strftime("%Y-%m-%d %H:%M:%S"), row["id"]),
+        )
+        d = dict(row)
+        d["inflight"] = 1 if (d.get("inflight_at") or 0) < stale_before else (d.get("inflight") or 0) + 1
+        return d
+
+
+def release_account(account_id):
+    """归还账号在飞名额（幂等，负值截 0）。"""
+    with connect() as db:
+        db.execute("UPDATE accounts SET inflight=MAX(COALESCE(inflight,0)-1,0) WHERE id=?", (account_id,))
 
 def bump_account_usage(account_id):
     """原子累加 request_count 并刷新 last_used_at（并发不丢计数）。"""

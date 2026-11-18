@@ -145,8 +145,14 @@ async def completions(body:Completion,request:Request,authorization:str|None=Hea
     scope=token_platform_scope(token_id)
     if scope and p["key"]!=scope:
         raise HTTPException(403,{"error":{"message":f"token bound to platform '{scope}',拒绝访问 '{p['key']}'","type":"permission_error"}})
-    account=db.pick_account(p["id"])
-    if not account: raise HTTPException(503,{"error":{"message":"no active account","type":"server_error"}})
+    # 每账号并发上限：默认 1（单账号同一时刻只跑一个请求，防止上游会话冲突）
+    try:
+        max_inflight = max(1, int(db.get_setting("account_max_inflight", "1") or 1))
+    except (TypeError, ValueError):
+        max_inflight = 1
+    account=db.pick_account(p["id"], max_inflight)
+    if not account:
+        raise HTTPException(503,{"error":{"message":"no active account or all accounts busy","type":"server_error"}})
     adapter=adapter_for(p)
     cid="chatcmpl-"+uuid.uuid4().hex; created=int(time.time()); started=time.monotonic()
     try:
@@ -182,6 +188,7 @@ async def completions(body:Completion,request:Request,authorization:str|None=Hea
                     if request.headers.get("x-aam-source", "") != "assistant":
                         db.log_request(account["id"],p["key"],body.model,ok and done,int((time.monotonic()-started)*1000),err)
                     db.bump_account_usage(account["id"])
+                    db.release_account(account["id"])
                     bump_token(token_id)
             return StreamingResponse(generate(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
         text=await adapter.complete(account,display_model,body.messages,False,body.temperature)
@@ -195,3 +202,7 @@ async def completions(body:Completion,request:Request,authorization:str|None=Hea
         logger.warning("Upstream completion error: %s", type(exc).__name__, exc_info=True)
         db.log_request(account["id"],p["key"],body.model,False,int((time.monotonic()-started)*1000),type(exc).__name__)
         raise HTTPException(502,{"error":{"message":"upstream_error","type":"upstream_error"}})
+    finally:
+        # 非流式路径归还账号在飞名额（流式路径在 generate() finally 归还）
+        if not body.stream:
+            db.release_account(account["id"])

@@ -55,6 +55,7 @@ class SettingsInput(BaseModel):
     tool_vision_mode: str | None = None
     tool_vision_endpoint: str | None = None
     tool_vision_bridge_script: str | None = None
+    account_max_inflight: str | None = None
 
 class RefreshInput(BaseModel):
     pass
@@ -395,7 +396,8 @@ def settings():
             "tool_vision_key":db.get_setting("tool_vision_key",""),
             "tool_vision_mode":db.get_setting("tool_vision_mode","http"),
             "tool_vision_endpoint":db.get_setting("tool_vision_endpoint",""),
-            "tool_vision_bridge_script":db.get_setting("tool_vision_bridge_script","")}
+            "tool_vision_bridge_script":db.get_setting("tool_vision_bridge_script",""),
+            "account_max_inflight":db.get_setting("account_max_inflight","1")}
 
 @router.post("/settings")
 def save_settings(body:SettingsInput):
@@ -414,6 +416,7 @@ def save_settings(body:SettingsInput):
     if body.tool_vision_mode is not None: db.set_setting("tool_vision_mode",body.tool_vision_mode.strip())
     if body.tool_vision_endpoint is not None: db.set_setting("tool_vision_endpoint",body.tool_vision_endpoint.strip())
     if body.tool_vision_bridge_script is not None: db.set_setting("tool_vision_bridge_script",body.tool_vision_bridge_script.strip())
+    if body.account_max_inflight is not None: db.set_setting("account_max_inflight",body.account_max_inflight.strip())
     return settings()
 
 @router.post("/auto-check/run")
