@@ -10,6 +10,7 @@ from .gateway import router as gateway_router
 from .trae_login import router as trae_login_router, novnc_router
 from .loomy_login_api import router as loomy_login_router
 from .tabbit_login_api import router as tabbit_login_router
+from .tabbit_login_api import _public as tabbit_public_router
 from .workbuddy_login_api import router as workbuddy_login_router
 from .assistant_api import router as assistant_router
 
@@ -48,6 +49,7 @@ app.include_router(trae_login_router)  # /api/trae-login/*
 app.include_router(novnc_router)       # /novnc/* (noVNC 代理)
 app.include_router(loomy_login_router)  # /api/login/loomy/* (发短信添加账号)
 app.include_router(tabbit_login_router)  # /api/login/tabbit/* (发短信添加账号)
+app.include_router(tabbit_public_router)  # /api/login/tabbit/google-callback (手机端 Google 回调, 一次性token)
 app.include_router(workbuddy_login_router)  # /api/login/workbuddy/* (OAuth 授权)
 app.include_router(assistant_router)  # /api/assistant/* (AI 助手，3065 移植)
 

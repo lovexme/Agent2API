@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -19,7 +20,7 @@ ROUTER_STATE='%5B%22%22%2C%7B%22children%22%3A%5B%22newtab%22%2C%7B%22children%2
 class TabbitAdapter(PlatformAdapter):
     def __init__(self,platform):
         self.platform=platform; self.base=platform["base_url"].rstrip("/"); self.proxy=platform.get("proxy") or None
-        self._sign_keys={}; self._sessions={}; self._models={}
+        self._sign_keys={}; self._sessions={}; self._models={}; self._models_detail={}
     def _client(self): return httpx.AsyncClient(verify=True,proxy=self.proxy,timeout=60,follow_redirects=True)
     def _uuid(self):
         positions=[2,7,11,14,18,21,25,28]; stamp=f"{int(time.time()):08x}"[-8:]; mapping=dict(zip(positions,stamp)); chars="0123456789abcdef"
@@ -45,6 +46,24 @@ class TabbitAdapter(PlatformAdapter):
         if r.status_code==499 and retry:
             await self._key(True); return await self._request(account,method,path,body,accept,extra,False)
         r.raise_for_status(); return r
+    async def models_detailed(self,account):
+        """返回 [{name, model_key, access_type, premium}]，供面板展示权限标记。
+
+        上游对 premium_only 模型在 standard 会员下会返回 492，
+        所以这里把权限信息一并带出，面板可标注「需升级」。
+        """
+        cached=self._models_detail.get(account["id"])
+        if cached and cached[1]>time.monotonic(): return cached[0]
+        response=await self._request(account,"GET","/proxy/v1/model_config/models?a=0&scene=chat")
+        out=[]
+        for item in response.json().get("models",[]):
+            name=item.get("display_name")
+            if not name: continue
+            atype=item.get("model_access_type") or ""
+            out.append({"name":name,"model_key":item.get("model_key") or name,
+                        "access_type":atype,"premium":atype=="premium_only"})
+        self._models_detail[account["id"]]=(out,time.monotonic()+60)
+        return out
     async def check(self,account):
         user=(await self._request(account,"GET","/api/v0/user/base-info")).json()
         if not user.get("success"): return {"status":"expired","status_msg":str(user.get("message") or user.get("error") or "Authentication failed"),"user_info":user}
@@ -79,9 +98,17 @@ class TabbitAdapter(PlatformAdapter):
         return json.dumps({"chat_session_id":session,"message_id":None,"content":content,"selected_model":model,"parallel_group_id":None,"task_name":"chat","agent_mode":False,"metadatas":{"html_content":f"<p>{escape(content)}</p>"},"references":[],"entity":{"key":"d41d8cd98f00b204e9800998ecf8427e","extras":{"type":"tab","url":""}}},ensure_ascii=False,separators=(",",":"))
     async def complete(self,account,model,messages,stream=False,temperature=None):
         body=await self._body(account,model,messages)
-        if stream: return self._stream(account,body)
+        if stream: return self._stream_retry(account,body)
         response=await self._request(account,"POST","/api/v1/chat/completion",body,"text/event-stream")
-        return self._parse_sse(response.text)
+        text=self._parse_sse(response.text)
+        if not text:
+            # 上游静默限流返回空：重试至多 2 次，间隔 3 秒
+            for _ in range(2):
+                await asyncio.sleep(3)
+                response=await self._request(account,"POST","/api/v1/chat/completion",body,"text/event-stream")
+                text=self._parse_sse(response.text)
+                if text: break
+        return text
     async def _stream(self,account,body):
         headers=await self._headers(account,body,"text/event-stream"); headers["Content-Type"]="application/json"
         async with self._client() as c:
@@ -97,6 +124,41 @@ class TabbitAdapter(PlatformAdapter):
                         except json.JSONDecodeError: continue
                         yield json.dumps({"type":event_name,"data":payload},ensure_ascii=False)
                         event_name=""
+    async def _stream_retry(self,account,body):
+        """流式：若整个流没有产出任何 message_chunk（被上游静默限流），自动重试至多 2 次。
+
+        注意：上游真正的错误事件(error+code)会立即透传，不当作空内容处理。
+        """
+        for attempt in range(3):
+            first, rest = await self._first_chunk(account, body)
+            if first is not None:
+                yield first
+                if rest:
+                    async for item in rest:
+                        yield item
+                return
+            if attempt < 2:
+                await asyncio.sleep(3)
+        raise RuntimeError("Tabbit stream returned no content (rate limited?)")
+    async def _first_chunk(self, account, body):
+        """聚合到首个有效数据：返回 (first_raw, rest_iter) 或 (None, None)。
+
+        若中途出现上游错误事件(code 非空)，原样抛出，避免重试掩盖真实错误。
+        """
+        collected = []
+        async for raw in self._stream(account, body):
+            collected.append(raw)
+            try:
+                ev = json.loads(raw)
+            except Exception:
+                continue
+            typ = ev.get("type")
+            data = ev.get("data") or {}
+            if typ == "error":
+                raise RuntimeError("Tabbit upstream error: code=%s" % (data.get("code") or "?"))
+            if typ == "message_chunk" and data.get("content"):
+                return collected[0], iter(collected[1:])
+        return None, None
     @staticmethod
     def _parse_sse(text):
         chunks=[]; event_name=""

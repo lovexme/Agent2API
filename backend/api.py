@@ -75,7 +75,7 @@ def invalidate_adapter(platform_id: int | None = None):
 
 
 def adapter_for(platform):
-    # proxy_enabled=0 时视为直连：地址保留但不用（沿用 Agent2API 的启用开关语义），适配器零改动
+    # proxy_enabled=0 时视为直连：地址保留但不用（3065 启用开关语义），适配器零改动
     if not platform.get("proxy_enabled", 1):
         platform = {**platform, "proxy": ""}
     cls = ADAPTERS.get(platform["adapter"])
@@ -143,7 +143,6 @@ async def daily_tasks_data():
     accounts = []
     try:
         from pathlib import Path as _Path
-        import os as _os
         data = json.loads(_Path(_os.environ.get("TRAE2API_DATA", "/opt/trae2api/data/accounts.json")).read_text(encoding="utf-8"))
         for k, v in (data.get("accounts") or {}).items():
             accounts.append({"account_id": k, "label": str(v.get("label") or v.get("user_id") or k)})
@@ -355,7 +354,12 @@ async def account_models(account_id:int):
     account=db.get_account(account_id)
     if not account: raise HTTPException(404,"account not found")
     platform=db.get_platform(account["platform_id"])
-    try: models=await adapter_for(platform).models(account)
+    try:
+        adapter=adapter_for(platform)
+        if hasattr(adapter, "models_detailed"):
+            models=await adapter.models_detailed(account)
+        else:
+            models=[{"name":n,"premium":False} for n in await adapter.models(account)]
     except Exception as exc: raise HTTPException(502,str(exc))
     with db.connect() as conn:
         quota=db.parse_json(account.get("quota_json")); quota["models"]=models
@@ -496,7 +500,7 @@ def reset_token(token_id: int):
         raise HTTPException(404, "token not found")
     return {"ok": True, "item": dict(row)}
 
-# ---------------- 报表 ----------------
+# ---------------- 报表（3065 移植） ----------------
 
 from datetime import datetime as _dt
 
@@ -589,7 +593,7 @@ def report_summary(days: int | None = Query(None, ge=1, le=365),
         "top": {"providers": providers, "models": models, "accounts": accounts},
     }
 
-# ---------------- 工具服务 ----------------
+# ---------------- 工具服务（3065 移植） ----------------
 
 class ServiceInput(BaseModel):
     name: str
