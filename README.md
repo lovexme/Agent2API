@@ -14,7 +14,7 @@ FastAPI + Vue 3 的 AI 账号聚合与运维面板：把多个 AI 平台账号�
 - **工具服务**：MCP / Skill / REST 服务注册与连通性测试；网络搜索（Tavily / Querit / Firecrawl / Ollama）与视觉分析等能力配置
 - **报表**：请求用量统计（总量 / 成功率 / 活跃天数 / 连续天数）、按天或小时趋势、Top 提供商·模型·账号排行，支持自定义时间区间
 - **AI 助手**：对话式管理（会话保存在本地、后端薄代理持密钥调用网关、独立限流），支持模型下拉与连通性测试
-- **每日任务**：Trae 每日签到等任务一键执行（需要 Trae2api 环境）
+- **每日任务**：Trae 每日签到、WorkBuddy 任务进度/签到/一键跑任务（分别需要 Trae2api / wb2api 网关）
 - **手机验证码登录**：短信添加账号（可选，需要短信平台配置）
 - **移动端适配**：桌面 / 手机浏览器均可使用；深色 / 浅色主题切换
 
@@ -53,6 +53,55 @@ bash start.sh          # 默认 http://0.0.0.0:8710
 sudo cp deploy/aam-panel.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now aam-panel
+```
+
+## 可选网关一键部署（WorkBuddy / Trae）
+
+面板本体**不依赖**这两个网关——不装也能用 **Tabbit（国内/国际）、Loomy**，以及任意 OpenAI 兼容上游。只有要用 **WorkBuddy** 或 **Trae** 时才需要：
+
+| 平台 | 需要的外部网关 | 端口 | 来源 |
+|---|---|---|---|
+| WorkBuddy | wb2api（WorkBuddy2API Panel） | 7863 | GitHub Release 二进制 / GHCR 镜像 |
+| Trae | trae2api（Trae2api-cn） | 8770 | GitHub 仓库 |
+
+一键获取并托管（脚本只下载/配置/注册 systemd，**不把上游源码打进本仓库**）：
+
+```bash
+bash deploy-gateways.sh              # 部署全部可选网关
+bash deploy-gateways.sh workbuddy    # 只装 WorkBuddy 网关(7863)
+bash deploy-gateways.sh trae         # 只装 Trae 网关(8770)
+```
+
+可选环境变量：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AAM_TOOLS_DIR` | `./gateways` | 网关安装根目录 |
+| `AAM_WB2API_PORT` | `7863` | WorkBuddy 网关端口 |
+| `AAM_TRAE_PORT` | `8770` | Trae 网关端口 |
+| `AAM_WB2API_VERSION` | `latest` | wb2api 版本 tag |
+| `AAM_SKIP_SYSTEMD=1` | 关闭 | 前台运行（调试用，不注册 systemd） |
+| `TRAE2API_LOCAL` | 空 | 已本地 clone 时指定源码目录，跳过 clone |
+| `TRAE2API_SRC` | 官方仓库 | trae2api git 地址 |
+
+脚本行为：
+
+- 已监听对应端口 → **自动跳过**（不覆盖你已有的服务）
+- 已存在同名 systemd 且运行中 → **跳过覆盖**，保留现有实例
+- wb2api 首次安装会生成 `config.json` 并随机生成 `api_key`（打印出来）
+- 非 root 用户 → 不写 systemd，提示手工启动命令
+
+装完后：
+
+1. **WorkBuddy**：把脚本打印的 `api_key` 填进面板「设置」→ WorkBuddy 网关 API Key（网关地址默认 `http://127.0.0.1:7863`）
+2. **Trae**：面板「平台接入」确认 Trae 平台 `base_url` 指向 `http://127.0.0.1:8770/v1`
+3. 两个网关都有自己的登录/授权流程，账号在各自网关上维护（WorkBuddy OAuth 可从 AAM 面板发起）
+
+卸载：
+
+```bash
+systemctl disable --now workbuddy2api trae2api
+rm -rf gateways/
 ```
 
 ## 添加账号
