@@ -99,7 +99,11 @@ async def tabbit_send(request: Request, body: SMSInput, platform: str = "tabbit-
         # Tabbit 验证流程不需要 msgid（verify 只用 phone+smsCode），返回空串保持响应结构一致
         return {"ok": True, "msgid": "", "msg": f"验证码已发送到 {phone}"}
     err = d.get("error") or {}
-    raise HTTPException(400, f"发码失败: {err.get('msg') or d.get('message') or json.dumps(d, ensure_ascii=False)[:120]}")
+    raw = str(err.get("msg") or d.get("message") or d.get("detail") or "")
+    if "noBetaPermission" in raw or "beta" in raw.lower():
+        raise HTTPException(400, "Tabbit 国际版暂未开放手机号登录（auth.noBetaPermission）。"
+                                 "请改用 Cookie 添加：浏览器(需挂出口代理)打开 https://web.tabbit.ai → Google 登录 → F12 复制 Cookie → 面板新增账号选 Tabbit 国际版粘贴")
+    raise HTTPException(400, f"发码失败: {raw or json.dumps(d, ensure_ascii=False)[:120]}")
 
 
 @router.post("/tabbit/verify")
@@ -133,7 +137,11 @@ async def tabbit_verify(request: Request, body: VerifyInput, platform: str = "ta
     except Exception:
         raise HTTPException(502, f"上游响应异常: {r.text[:120]}")
     if not d.get("success"):
-        raise HTTPException(400, f"登录失败: {d.get('message') or d.get('error') or json.dumps(d, ensure_ascii=False)[:120]}")
+        raw = str(d.get("message") or d.get("error") or d.get("detail") or "")
+        if "noBetaPermission" in raw or "beta" in raw.lower():
+            raise HTTPException(400, "Tabbit 国际版暂未开放手机号登录（auth.noBetaPermission）。"
+                                     "请改用 Cookie 添加：浏览器(需挂出口代理)打开 https://web.tabbit.ai → Google 登录 → F12 复制 Cookie → 面板新增账号选 Tabbit 国际版粘贴")
+        raise HTTPException(400, f"登录失败: {raw or json.dumps(d, ensure_ascii=False)[:120]}")
     uid = d.get("user_id") or ""
     # 把 Set-Cookie 拼成 adapter 需要的 Cookie 串
     items = [(k, v) for k, v in r.cookies.items() if k in ("next-auth.session-token", "token", "expires_in", "user_id")]

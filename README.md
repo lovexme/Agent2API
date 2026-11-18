@@ -108,7 +108,8 @@ rm -rf gateways/
 
 | 平台 | 凭据类型 | 获取方式 |
 |---|---|---|
-| Tabbit 国内 / 国际 | Cookie | 浏览器登录 [web.tabbit.com](https://web.tabbit.com) / [web.tabbit.ai](https://web.tabbit.ai) → F12 → Network → 任一请求的 Cookie 头复制 |
+| Tabbit 国内版 | Cookie / 短信 | 浏览器登录 [web.tabbit.com](https://web.tabbit.com) → F12 → Network → 任一请求的 Cookie 头复制；或面板「手机验证码添加」 |
+| Tabbit 国际版 | Cookie | 浏览器(需挂出口代理)登录 [web.tabbit.ai](https://web.tabbit.ai) → Google 登录 → F12 → Network → 任一请求的 Cookie 头复制。**国际版暂未开放手机号登录**：上游接口对所有手机号返回 `auth.noBetaPermission`（beta 期仅 Google 账号），加国际区号也一样被拒 |
 | Loomy 讯飞 | Session | 客户端 `auth-session.json` 中的 `session` 字段，或用「短信登录」页自动获取 |
 | Trae | 平台登录态 | 需先部署 [Trae2api](https://github.com/autumnsentiment/Trae2api-cn) 网关并在「平台健康」填其地址；账号在 Trae2api 侧维护 |
 | WorkBuddy | OAuth 授权 | 面板「账号池」→ 添加账号 → WorkBuddy → 按提示完成 OAuth 设备授权 |
@@ -119,6 +120,8 @@ rm -rf gateways/
 ### 手机验证码添加账号（Tabbit 国内版 / Loomy）
 
 「账号池」→ **手机验证码添加**，选平台 → 填手机号 → 发送验证码 → 填收到的验证码 → 验证并添加。成功后自动取会话凭据、拉取用户信息与额度，并做一次健康检测（`active` 即可用）。
+
+> ⚠️ **国际版不支持手机号添加**：Tabbit 国际版（web.tabbit.ai）beta 期仅开放 Google 登录，短信通道对包括国际区号在内的所有手机号返回 `auth.noBetaPermission`。国际版请用 Cookie 方式（浏览器挂代理 Google 登录后复制 Cookie）。
 
 要点：
 
