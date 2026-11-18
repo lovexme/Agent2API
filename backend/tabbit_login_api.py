@@ -23,8 +23,29 @@ from .auth import require_admin
 
 router = APIRouter(prefix="/api/login", dependencies=[Depends(require_admin)])
 
-BASE = "https://web.tabbit.com"
 UA = "Mozilla/5.0"
+DEFAULT_BASES = {
+    "tabbit-domestic": "https://web.tabbit.com",
+    "tabbit-intl": "https://web.tabbit.ai",
+}
+
+def _tab_endpoint(platform: str):
+    """按平台 key 返回 (base, proxy, platform_key)。
+
+    base/proxy 优先取「平台接入」页该平台配置(别人部署可自行改),
+    未配置时回退默认域名;国际版通常需要出口代理。
+    """
+    key = platform if platform in DEFAULT_BASES else "tabbit-domestic"
+    base, proxy = DEFAULT_BASES[key], None
+    try:
+        with db.connect() as conn:
+            row = conn.execute("SELECT base_url, proxy FROM platforms WHERE key=?", (key,)).fetchone()
+        if row:
+            base = (row["base_url"] or base).rstrip("/")
+            proxy = row["proxy"] or None
+    except Exception:
+        pass
+    return base, proxy, key
 
 
 class SMSInput(BaseModel):
@@ -40,27 +61,33 @@ def _uuid64() -> str:
     return "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(64))
 
 
-def _headers() -> dict:
-    return {"Content-Type": "application/json", "Origin": BASE,
-            "Referer": BASE + "/login", "User-Agent": UA}
+def _headers(base: str) -> dict:
+    return {"Content-Type": "application/json", "Origin": base,
+            "Referer": base + "/login", "User-Agent": UA}
 
 
 @router.post("/tabbit/send")
-async def tabbit_send(request: Request, body: SMSInput):
-    """给手机号发 Tabbit 短信验证码。限频防轰炸。"""
+async def tabbit_send(request: Request, body: SMSInput, platform: str = "tabbit-domestic"):
+    """给手机号发 Tabbit 短信验证码（国内 web.tabbit.com / 国际 web.tabbit.ai）。限频防轰炸。"""
     phone = body.phone.strip()
-    if len(phone) != 11 or not phone.isdigit() or phone[0] != "1":
-        raise HTTPException(400, "手机号格式不对（11 位大陆号）")
+    if platform in ("tabbit-intl",):
+        if not (phone.startswith("+") and phone[1:].isdigit() and 8 <= len(phone) - 1 <= 15)            and not (phone.isdigit() and 8 <= len(phone) <= 15):
+            raise HTTPException(400, "国际版手机号格式: 如 +8618900000000 或纯数字 8-15 位")
+    else:
+        if len(phone) != 11 or not phone.isdigit() or phone[0] != "1":
+            raise HTTPException(400, "手机号格式不对（11 位大陆号）")
     client = request.client
     ip = client.host if client else "?"
-    if not db.rate_limit("sms_send:tabbit", f"phone:{phone}", 60):
+    scope = "sms_send:tabbit-intl" if platform == "tabbit-intl" else "sms_send:tabbit"
+    if not db.rate_limit(scope, f"phone:{phone}", 60):
         raise HTTPException(429, "该手机号 60 秒内只能发送一次，请稍后再试")
     if not db.rate_limit("sms_send_ip", f"ip:{ip}", 5):
         raise HTTPException(429, "发送过于频繁，请稍后再试")
+    base, proxy, _ = _tab_endpoint(platform)
     payload = {"uuid": _uuid64(), "platform": "1", "version": "", "app": "1000", "mobile": phone}
-    async with httpx.AsyncClient(timeout=25) as c:
-        r = await c.post(BASE + "/proxy/v0/oauth/send-verification-code",
-                         json=payload, headers=_headers())
+    async with httpx.AsyncClient(timeout=25, proxy=proxy) as c:
+        r = await c.post(base + "/proxy/v0/oauth/send-verification-code",
+                         json=payload, headers=_headers(base))
     try:
         d = r.json()
     except Exception:
@@ -76,22 +103,31 @@ async def tabbit_send(request: Request, body: SMSInput):
 
 
 @router.post("/tabbit/verify")
-async def tabbit_verify(request: Request, body: VerifyInput):
-    """校验验证码 → 登录拿到 cookie → 自动建号入 AAM。验证码尝试限频。"""
+async def tabbit_verify(request: Request, body: VerifyInput, platform: str = "tabbit-domestic"):
+    """校验验证码 → 登录拿到 cookie → 自动建号入 AAM。验证码尝试限频。
+
+    platform: tabbit-domestic(默认) / tabbit-intl
+    """
     phone = body.phone.strip()
     mcode = body.mcode.strip()
-    if len(phone) != 11 or not phone.isdigit():
-        raise HTTPException(400, "手机号格式不对")
+    if platform in ("tabbit-intl",):
+        if not (phone.startswith("+") and phone[1:].isdigit() and 8 <= len(phone) - 1 <= 15)            and not (phone.isdigit() and 8 <= len(phone) <= 15):
+            raise HTTPException(400, "国际版手机号格式: 如 +8618900000000 或纯数字 8-15 位")
+    else:
+        if len(phone) != 11 or not phone.isdigit():
+            raise HTTPException(400, "手机号格式不对")
     if not mcode:
         raise HTTPException(400, "请输入验证码")
     client = request.client
     ip = client.host if client else "?"
-    if not db.rate_limit("sms_verify:tabbit", f"phone:{phone}", 10):
+    scope = "sms_verify:tabbit-intl" if platform == "tabbit-intl" else "sms_verify:tabbit"
+    if not db.rate_limit(scope, f"phone:{phone}", 10):
         raise HTTPException(429, "验证次数过于频繁，请稍后再试")
+    base, proxy, _ = _tab_endpoint(platform)
     payload = {"uuid": _uuid64(), "platform": "1", "version": "",
                "app": "1000", "mobile": phone, "smsCode": mcode}
-    async with httpx.AsyncClient(timeout=25) as c:
-        r = await c.post(BASE + "/proxy/v0/oauth/login", json=payload, headers=_headers())
+    async with httpx.AsyncClient(timeout=25, proxy=proxy) as c:
+        r = await c.post(base + "/proxy/v0/oauth/login", json=payload, headers=_headers(base))
     try:
         d = r.json()
     except Exception:
@@ -104,14 +140,16 @@ async def tabbit_verify(request: Request, body: VerifyInput):
     cred = "; ".join(f"{k}={v}" for k, v in items)
     if not cred:
         raise HTTPException(502, "登录成功但未返回 Cookie")
+    plat_key = "tabbit-intl" if platform == "tabbit-intl" else "tabbit-domestic"
+    user_id_suffix = phone[-4:] if phone and len(phone) >= 4 else (uid[-4:] or "x")
     with db.connect() as conn:
-        row = conn.execute("SELECT id FROM platforms WHERE key='tabbit-domestic'").fetchone()
+        row = conn.execute("SELECT id FROM platforms WHERE key=?", (plat_key,)).fetchone()
         pid = row["id"] if row else 1
         cur = conn.execute(
             "INSERT INTO accounts(platform_id,name,credential,credential_type,user_info) VALUES(?,?,?,?,?)",
-            (pid, f"Tabbit-{phone[-4:]}", cred, "cookie",
-             json.dumps({"phone": phone, "id": uid, "display_name": "",
-                         "secret_mobile": f"*******{phone[-4:]}"}, ensure_ascii=False)))
+            (pid, f"Tabbit-{user_id_suffix}", cred, "cookie",
+             json.dumps({"phone": phone, "id": uid, "display_name": "", "realm": "intl" if platform == "tabbit-intl" else "cn",
+                         "secret_mobile": f"*******{user_id_suffix}"}, ensure_ascii=False)))
         acct_id = cur.lastrowid
     from .api import check_account
     item = await check_account(acct_id)

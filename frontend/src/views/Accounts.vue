@@ -176,7 +176,7 @@ async function copyWorkbuddyUrl() {
 }
 
 // ── 手机验证码添加（发短信建号） ──
-const smsPlatforms = computed(() => platforms.value.filter(p => ['loomy', 'tabbit-domestic'].includes(p.key)))
+const smsPlatforms = computed(() => platforms.value.filter(p => ['loomy', 'tabbit-domestic', 'tabbit-intl'].includes(p.key)))
 const sms = ref({ show: false, platform_id: null, phone: '', code: '', msgid: '', sent: false, sentKey: '', msg: '', timer: 0, sending: false, verifying: false, tick: null })
 function openSmsLogin() {
   sms.value.show = true
@@ -190,14 +190,19 @@ function openSmsLogin() {
 async function smsSend() {
   const s = sms.value
   const ph = s.phone.trim()
-  if (!/^1\d{10}$/.test(ph)) return toastErr('手机号格式不对')
   if (!s.platform_id) return toastErr('请先选平台')
   const key = smsPlatforms.value.find(p => p.id === s.platform_id)?.key
+  const isIntl = key === 'tabbit-intl'
+  if (isIntl) {
+    if (!/^\+?\d{8,15}$/.test(ph)) return toastErr('国际版手机号格式：+8618900000000 或纯数字 8-15 位')
+  } else if (!/^1\d{10}$/.test(ph)) return toastErr('手机号格式不对（11 位大陆号）')
   s.sending = true
   s.msg = '发送中…'
   try {
-    const isTabbit = key === 'tabbit-domestic'
-    const url = isTabbit ? '/api/login/tabbit/send' : `/api/login/loomy/send?phone=${encodeURIComponent(ph)}`
+    const isTabbit = key === 'tabbit-domestic' || isIntl
+    const url = isTabbit
+      ? `/api/login/tabbit/send${isIntl ? '?platform=tabbit-intl' : ''}`
+      : `/api/login/loomy/send?phone=${encodeURIComponent(ph)}`
     const r = await fetch(url, {
       method: 'POST',
       headers: isTabbit ? { 'Content-Type': 'application/json' } : {},
@@ -258,13 +263,15 @@ async function smsVerify() {
     s.sent = false; s.msgid = ''; s.msg = ''
     return toastErr('已切换平台，请为当前平台重新发送验证码')
   }
-  if (!s.msgid && key !== 'tabbit-domestic') return toastErr('发送接口未返回 msgid，请重新发送验证码')
-  if (key !== 'loomy' && key !== 'tabbit-domestic') return toastErr('该平台暂不支持短信登录')
-  const seg = key === 'tabbit-domestic' ? 'tabbit' : key
+  const isIntl = key === 'tabbit-intl'
+  if (!s.msgid && key !== 'tabbit-domestic' && !isIntl) return toastErr('发送接口未返回 msgid，请重新发送验证码')
+  if (!['loomy', 'tabbit-domestic', 'tabbit-intl'].includes(key)) return toastErr('该平台暂不支持短信登录')
+  const seg = (key === 'tabbit-domestic' || isIntl) ? 'tabbit' : key
+  const qs = isIntl ? '?platform=tabbit-intl' : ''
   s.verifying = true
   s.msg = '验证中…'
   try {
-    const r = await fetch(`/api/login/${seg}/verify`, {
+    const r = await fetch(`/api/login/${seg}/verify${qs}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone: ph, mcode: s.code.trim(), msgid: s.msgid }),
