@@ -180,10 +180,20 @@ class OpenAICompatAdapter(PlatformAdapter):
         data = payload.get("data") if isinstance(payload, dict) else payload
         return [m.get("id") for m in (data or []) if isinstance(m, dict) and m.get("id")]
 
-    async def complete(self, account, model, messages, stream=False, temperature=None):
+    supports_tools = True
+
+    async def complete(self, account, model, messages, stream=False, temperature=None, tools=None):
+        """完成一次对话。
+
+        - tools 为 None/空: 返回 str（纯文本内容，保持旧契约）
+        - tools 非空: 返回 dict {role, content, tool_calls}，供网关拼 OpenAI 原生响应
+        """
         body = {"model": model, "messages": messages, "stream": bool(stream)}
         if temperature is not None:
             body["temperature"] = temperature
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
         if stream:
             return self._stream(account, body)
         async with self._client() as c:
@@ -194,9 +204,14 @@ class OpenAICompatAdapter(PlatformAdapter):
             raise RuntimeError("上游 HTTP %s: %s" % (r.status_code, r.text[:200]))
         payload = r.json()
         try:
-            return payload["choices"][0]["message"].get("content") or ""
+            msg = payload["choices"][0]["message"]
         except (KeyError, IndexError, TypeError):
             raise RuntimeError("上游响应异常: %s" % json.dumps(payload, ensure_ascii=False)[:200])
+        content = msg.get("content") or ""
+        tool_calls = msg.get("tool_calls")
+        if tools:
+            return {"role": "assistant", "content": content, "tool_calls": tool_calls}
+        return content
 
     async def _stream(self, account, body):
         async with self._client() as c:
@@ -231,5 +246,15 @@ class OpenAICompatAdapter(PlatformAdapter):
                         content = delta.get("content") or ""
                     except (KeyError, IndexError, TypeError):
                         content = ""
+                        delta = {}
                     if content:
                         yield json.dumps({"type": "message_chunk", "data": {"content": content}}, ensure_ascii=False)
+                    # 工具调用增量：原样转成 tool_call_chunk 事件，网关拼成 OpenAI delta.tool_calls
+                    for tc in (delta.get("tool_calls") or []):
+                        yield json.dumps({"type": "tool_call_chunk", "data": {
+                            "index": tc.get("index", 0),
+                            "id": tc.get("id"),
+                            "type": tc.get("type") or "function",
+                            "function": {"name": (tc.get("function") or {}).get("name"),
+                                         "arguments": (tc.get("function") or {}).get("arguments") or ""},
+                        }}, ensure_ascii=False)

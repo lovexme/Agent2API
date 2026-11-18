@@ -104,7 +104,7 @@ class LoomyAdapter(PlatformAdapter):
             items = items.get("data") or []
         return [m.get("id") for m in items if isinstance(m, dict) and m.get("id")]
 
-    async def complete(self, account, model, messages, stream=False, temperature=None):
+    async def complete(self, account, model, messages, stream=False, temperature=None, tools=None):
         body = {"model": model, "messages": messages, "stream": bool(stream)}
         if temperature is not None:
             body["temperature"] = temperature

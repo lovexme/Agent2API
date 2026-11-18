@@ -27,6 +27,8 @@ class Completion(BaseModel):
     messages:list[dict[str,Any]]
     stream:bool=False
     temperature:float|None=None
+    tools:list[dict[str,Any]]|None=None
+    tool_choice:str|dict[str,Any]|None=None
 
 class GatewayError(Exception): pass
 
@@ -154,14 +156,17 @@ async def completions(body:Completion,request:Request,authorization:str|None=Hea
     if not account:
         raise HTTPException(503,{"error":{"message":"no active account or all accounts busy","type":"server_error"}})
     adapter=adapter_for(p)
+    # 平台不支持工具调用时留痕，避免「请求成功但永不调工具」的静默误导
+    if body.tools and not getattr(adapter, "supports_tools", False):
+        logger.info("platform %s does not support tools; ignoring %d tool definitions", p["key"], len(body.tools))
     cid="chatcmpl-"+uuid.uuid4().hex; created=int(time.time()); started=time.monotonic()
     try:
         if body.stream:
             async def generate():
-                ok=True; err=""; done=False
+                ok=True; err=""; done=False; has_tool_calls=False
                 try:
                     yield "data: "+json.dumps(openai_chunk(cid,created,body.model,{"role":"assistant","content":""}),ensure_ascii=False)+"\n\n"
-                    async for raw in await adapter.complete(account,display_model,body.messages,True,body.temperature):
+                    async for raw in await adapter.complete(account,display_model,body.messages,True,body.temperature,tools=body.tools):
                         if raw=="[DONE]": continue
                         try: event=json.loads(raw)
                         except json.JSONDecodeError: continue
@@ -169,6 +174,14 @@ async def completions(body:Completion,request:Request,authorization:str|None=Hea
                         if typ=="message_chunk":
                             text=value.get("content","")
                             if text: yield "data: "+json.dumps(openai_chunk(cid,created,body.model,{"content":text}),ensure_ascii=False)+"\n\n"
+                        elif typ=="tool_call_chunk":
+                            # 工具调用增量: value={index,id,type,function:{name,arguments}}
+                            fn=value.get("function") if isinstance(value.get("function"),dict) else {}
+                            delta_tc={"index":value.get("index",0),"type":value.get("type") or "function",
+                                      "function":{"name":fn.get("name") or "","arguments":fn.get("arguments") or ""}}
+                            if value.get("id"): delta_tc["id"]=value["id"]
+                            yield "data: "+json.dumps(openai_chunk(cid,created,body.model,{"tool_calls":[delta_tc]}),ensure_ascii=False)+"\n\n"
+                            has_tool_calls=True
                         elif typ=="error":
                             # 上游错误不透传：客户端只见固定文案，日志只记错误类型
                             ok=False; err="UpstreamEventError"
@@ -176,7 +189,7 @@ async def completions(body:Completion,request:Request,authorization:str|None=Hea
                             yield "data: "+json.dumps({"error":{"message":"upstream_error","type":"upstream_error"}},ensure_ascii=False)+"\n\n"
                             break
                     if ok:
-                        yield "data: "+json.dumps(openai_chunk(cid,created,body.model,{},"stop"),ensure_ascii=False)+"\n\n"
+                        yield "data: "+json.dumps(openai_chunk(cid,created,body.model,{},"tool_calls" if has_tool_calls else "stop"),ensure_ascii=False)+"\n\n"
                         done=True
                         yield "data: [DONE]\n\n"
                 except Exception as exc:
@@ -191,8 +204,18 @@ async def completions(body:Completion,request:Request,authorization:str|None=Hea
                     db.release_account(account["id"])
                     bump_token(token_id)
             return StreamingResponse(generate(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
-        text=await adapter.complete(account,display_model,body.messages,False,body.temperature)
-        result={"id":cid,"object":"chat.completion","created":created,"model":body.model,"choices":[{"index":0,"message":{"role":"assistant","content":text},"finish_reason":"stop"}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+        text=await adapter.complete(account,display_model,body.messages,False,body.temperature,tools=body.tools)
+        if isinstance(text, dict):
+            # 带 tools 的适配器返回 {role, content, tool_calls}
+            msg = {"role": text.get("role") or "assistant", "content": text.get("content") or ""}
+            tcs = text.get("tool_calls")
+            if tcs:
+                msg["tool_calls"] = tcs
+            finish = "tool_calls" if tcs else "stop"
+        else:
+            msg = {"role": "assistant", "content": text}
+            finish = "stop"
+        result={"id":cid,"object":"chat.completion","created":created,"model":body.model,"choices":[{"index":0,"message":msg,"finish_reason":finish}],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
         if request.headers.get("x-aam-source", "") != "assistant":
             db.log_request(account["id"],p["key"],body.model,True,int((time.monotonic()-started)*1000))
         db.bump_account_usage(account["id"])

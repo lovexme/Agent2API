@@ -96,7 +96,7 @@ class TabbitAdapter(PlatformAdapter):
     async def _body(self,account,model,messages):
         session=await self._session_id(account); content=self._prompt(messages)
         return json.dumps({"chat_session_id":session,"message_id":None,"content":content,"selected_model":model,"parallel_group_id":None,"task_name":"chat","agent_mode":False,"metadatas":{"html_content":f"<p>{escape(content)}</p>"},"references":[],"entity":{"key":"d41d8cd98f00b204e9800998ecf8427e","extras":{"type":"tab","url":""}}},ensure_ascii=False,separators=(",",":"))
-    async def complete(self,account,model,messages,stream=False,temperature=None):
+    async def complete(self,account,model,messages,stream=False,temperature=None,tools=None):
         body=await self._body(account,model,messages)
         if stream: return self._stream_retry(account,body)
         response=await self._request(account,"POST","/api/v1/chat/completion",body,"text/event-stream")
