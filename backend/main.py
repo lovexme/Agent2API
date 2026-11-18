@@ -49,7 +49,7 @@ app.include_router(novnc_router)       # /novnc/* (noVNC 代理)
 app.include_router(loomy_login_router)  # /api/login/loomy/* (发短信添加账号)
 app.include_router(tabbit_login_router)  # /api/login/tabbit/* (发短信添加账号)
 app.include_router(workbuddy_login_router)  # /api/login/workbuddy/* (OAuth 授权)
-app.include_router(assistant_router)  # /api/assistant/* (AI 助手)
+app.include_router(assistant_router)  # /api/assistant/* (AI 助手，3065 移植)
 
 static = Path(__file__).resolve().parent / "static"
 if static.exists():

@@ -163,4 +163,95 @@ async def tabbit_verify(request: Request, body: VerifyInput, platform: str = "ta
     item = await check_account(acct_id)
     if isinstance(item, dict):
         item.pop("credential", None)
+    return {"ok": True, "account": item}# ═══════════════════════════════════════════════════════════════
+# Tabbit 国际版 Google 授权登录（零依赖 + 手动回填凭证）
+# ═══════════════════════════════════════════════════════════════
+# 流程（无需面板可达，适配挂代理浏览器）：
+#   1) 面板「国际版 Google 授权」→ 生成授权链接 + 一条注入脚本（无面板地址）
+#   2) 用户浏览器(挂代理)打开 web.tabbit.ai/login → F12 Console 粘贴脚本
+#      → 页面出现「使用 Google 账号登录」卡片 → 点击授权
+#   3) 脚本捕获 Google id_token → 页面内直接弹出「复制凭证」按钮
+#      （脚本不回调面板，彻底避开跨域/代理问题）
+#   4) 用户把凭证粘贴回面板「Google 凭证」输入框 → 提交本接口
+#      → 后端换 session cookie → 自动建号 → 健康检测
+# ═══════════════════════════════════════════════════════════════
+GOOGLE_CLIENT_ID = "448526856882-gks4gsvgspqkcdt8jsql5b5en0mk3v15.apps.googleusercontent.com"
+
+
+class GoogleTokenExchangeInput(BaseModel):
+    id_token: str = ""
+
+
+async def _exchange_google_idtoken(idt: str, tag: str = "google") -> dict:
+    """用 Google id_token 换 Tabbit 国际版 session cookie 并建号。
+
+    幂等逻辑：返回 (account, err) —— err 非 None 表示失败。
+    """
+    idt = (idt or "").strip()
+    if not idt or idt.count(".") != 2:
+        return None, "id_token 无效（需 Google 返回的 JWT）"
+
+    base, proxy, _ = _tab_endpoint("tabbit-intl")
+    payload = {"id_token": idt, "select_by": "user", "type": 1}
+    reg_payload = {"id_token": idt}
+    d, r = None, None
+    async with httpx.AsyncClient(timeout=30, proxy=proxy) as c:
+        r = await c.post(base + "/proxy/v0/oauth/third-party-login", json=payload, headers=_headers(base))
+        try:
+            d = r.json()
+        except Exception:
+            return None, f"上游响应异常: {r.text[:150]}"
+        if not d.get("success"):
+            r2 = await c.post(base + "/proxy/v0/user/register-overseas", json=reg_payload, headers=_headers(base))
+            try:
+                d2 = r2.json()
+            except Exception:
+                d2 = {}
+            if d2.get("success"):
+                d, r = d2, r2
+
+    if not d.get("success"):
+        raw = str(d.get("message") or d.get("error") or d.get("detail") or json.dumps(d, ensure_ascii=False)[:150])
+        if "noBetaPermission" in raw or "beta" in raw.lower():
+            return None, "该 Google 账号暂无 Tabbit 国际版 beta 权限（auth.noBetaPermission）。可能需要在官网申请 beta 资格，或换已获资格的 Google 账号。"
+        return None, f"Google 登录失败: {raw}"
+
+    uid = d.get("user_id") or ""
+    items = [(k, v) for k, v in r.cookies.items()
+             if k in ("next-auth.session-token", "token", "expires_in", "user_id")]
+    cred = "; ".join(f"{k}={v}" for k, v in items)
+    if not cred:
+        return None, "登录成功但未返回 Cookie"
+
+    info = d.get("user_info") or {}
+    suffix = (uid or tag or "goog")[-4:]
+    with db.connect() as conn:
+        row = conn.execute("SELECT id FROM platforms WHERE key='tabbit-intl'").fetchone()
+        pid = row["id"] if row else 2
+        # 国际版必须走出出口代理(直连 web.tabbit.ai 会被 403): proxy 有值但开关关着就自动打开
+        conn.execute("UPDATE platforms SET proxy_enabled=1 WHERE key='tabbit-intl' AND proxy!='' AND proxy_enabled=0")
+        cur = conn.execute(
+            "INSERT INTO accounts(platform_id,name,credential,credential_type,user_info) VALUES(?,?,?,?,?)",
+            (pid, f"TabbitIntl-{suffix}", cred, "cookie",
+             json.dumps({"id": uid, "display_name": info.get("display_name", ""),
+                         "email": info.get("email", ""), "realm": "intl", "source": "google-oauth"},
+                        ensure_ascii=False)))
+        acct_id = cur.lastrowid
+
+    from .api import check_account
+    try:
+        item = await check_account(acct_id)
+        if isinstance(item, dict):
+            item.pop("credential", None)
+    except Exception:
+        item = {"id": acct_id}
+    return item, None
+
+
+@router.post("/tabbit/google-exchange")
+async def tabbit_google_exchange(request: Request, body: GoogleTokenExchangeInput):
+    """面板端：粘贴 Google 凭证(id_token) → 换 cookie → 自动建号。"""
+    item, err = await _exchange_google_idtoken(body.id_token, tag="google")
+    if err:
+        raise HTTPException(400, err)
     return {"ok": True, "account": item}
