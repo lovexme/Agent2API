@@ -3,7 +3,7 @@
     <header class="page-head">
       <div><div class="page-title">账号池</div><div class="page-desc">多平台账号统一管理 · 状态、积分与凭据一览</div></div>
       <div class="head-actions">
-        <button class="btn" @click="openTraeLogin">Trae 浏览器登录</button><button class="btn" @click="openWorkbuddyLogin">WorkBuddy 授权</button><button class="btn" @click="openSmsLogin">手机验证码添加</button><button class="btn" @click="openGoogleIntl">国际版 Google 授权</button><button class="btn" @click="openDailyTasks">每日任务</button><button class="btn primary" @click="openCreate">＋ 新增账号</button>
+        <button class="btn" @click="openTraeLogin">Trae 浏览器登录</button><button class="btn" @click="openWorkbuddyLogin">WorkBuddy 授权</button><button class="btn" @click="openSmsLogin">手机验证码添加</button><button class="btn" @click="openDailyTasks">每日任务</button><button class="btn primary" @click="openCreate">＋ 新增账号</button>
       </div>
     </header>
     <div class="card">
@@ -47,23 +47,8 @@
     <section v-if="dailyTasks.show" class="modal open wide" role="dialog" aria-modal="true"><header class="modal-head">每日任务</header><div class="modal-body"><p class="task-tip">Trae 签到状态来自账号列表，可单个执行或全部签到。</p><div v-if="dailyTasks.loading" class="muted">正在加载 Trae 账号…</div><div v-else-if="!dailyTasks.items.length" class="empty"><strong>暂无 Trae 账号</strong><span>Trae 网关账号列表为空。</span></div><div v-else class="daily-task-list"><div v-for="task in dailyTasks.items" :key="task.account_id" class="daily-task-row"><div class="task-account"><strong>{{ task.label || task.account_id }}</strong><span class="acct-meta">{{ task.user_id || task.account_id }}</span></div><span class="badge" :class="task.ok === true ? 'ok' : task.ok === false ? 'err' : 'dim'">{{ task.message || '待签到' }}</span><button class="btn sm" :disabled="dailyTasks.busy" @click="checkinTask(task)">{{ dailyTasks.busyId === task.account_id ? '签到中…' : '签到' }}</button></div></div></div><footer class="modal-foot"><button class="btn" :disabled="dailyTasks.loading || dailyTasks.busy" @click="loadDailyTasks">刷新状态</button><button class="btn" @click="dailyTasks.show = false">关闭</button><button class="btn primary" :disabled="dailyTasks.loading || dailyTasks.busy || !dailyTasks.items.length" @click="checkinAllTasks">{{ dailyTasks.busy ? '签到中…' : '全部签到' }}</button></footer></section>
     <section v-if="traeLogin.show" class="modal open wide" role="dialog" aria-modal="true"><header class="modal-head">Trae 账号授权 <span class="badge" :class="traeLogin.boxUp ? 'ok' : 'warn'">{{ traeLogin.boxUp ? '服务就绪' : '沙箱未启动' }}</span><span class="spacer"></span><span class="acct-meta">已保存 {{ traeLogin.count }} 个账号</span></header><div class="modal-body"><p class="task-tip">下载并运行本机授权助手，再打开 Trae 授权页完成登录；凭据会自动推送至服务器。</p><ol class="oauth-steps"><li>下载授权助手：<a :href="helperLink('bat')" download>Windows .bat</a> · <a :href="helperLink('sh')" download>Mac/Linux .sh</a> · <a :href="helperLink('py')" download>通用 .py</a></li><li>运行助手并保持窗口开启。</li><li>打开授权页登录，完成后账号池会自动刷新。</li></ol><details><summary>备选：沙箱实时画面</summary><div class="trae-login-wrap"><iframe v-if="traeLogin.show" :src="traeLogin.url" class="trae-login-frame" allow="clipboard-read; clipboard-write"></iframe></div></details></div><footer class="modal-foot"><button class="btn" @click="resetSandbox">重置沙箱</button><button class="btn" @click="openAuthPage">打开授权页</button><button class="btn primary" @click="traeLogin.show = false; closeTraeLogin()">关闭</button></footer></section>
     <section v-if="workbuddy.show" class="modal open" role="dialog" aria-modal="true"><header class="modal-head">WorkBuddy 账号授权</header><div class="modal-body"><div class="field"><label>授权地址</label><a v-if="workbuddy.url" class="auth-link" :href="workbuddy.url" target="_blank" rel="noopener noreferrer">{{ workbuddy.url }}</a><span v-else class="muted">正在生成授权地址…</span><button v-if="workbuddy.url" class="btn sm" @click="copyWorkbuddyUrl">复制授权地址</button></div><p class="muted">{{ workbuddy.message || '请打开授权地址完成登录，本页面会自动检测。' }}</p></div><footer class="modal-foot"><button class="btn primary" @click="workbuddy.show = false; stopWorkbuddyPolling()">关闭</button></footer></section>
-    <section v-if="sms.show" class="modal open" role="dialog" aria-modal="true"><header class="modal-head">手机验证码添加账号</header><div class="modal-body"><div class="field"><label>平台</label><select class="select" v-model="sms.platform_id"><option v-for="p in smsPlatforms" :key="p.id" :value="p.id">{{ p.name }}（{{ p.key }}）{{ p.key === 'tabbit-intl' ? ' · 手机号未开放，请用 Cookie' : '' }}</option></select></div><div class="field"><label>手机号</label><input class="input" v-model="sms.phone" placeholder="输入接收验证码的手机号" /></div><div class="field"><label>短信验证码</label><div class="sms-code"><input class="input" v-model="sms.code" placeholder="输入验证码" /><button class="btn" :disabled="sms.sending || sms.timer > 0" @click="smsSend">{{ sms.timer > 0 ? `${sms.timer}s 后可重发` : (sms.sending ? '发送中…' : '发送验证码') }}</button></div></div><p v-if="smsIntl" class="sms-msg" style="color:var(--warn,#d97706)">⚠️ Tabbit 国际版 beta 期仅支持 Google 登录，手机号发码会被上游拒绝（auth.noBetaPermission）。推荐使用顶部「国际版 Google 授权」一键登录，或手动 Cookie 添加。</p>
+    <section v-if="sms.show" class="modal open" role="dialog" aria-modal="true"><header class="modal-head">手机验证码添加账号</header><div class="modal-body"><div class="field"><label>平台</label><select class="select" v-model="sms.platform_id"><option v-for="p in smsPlatforms" :key="p.id" :value="p.id">{{ p.name }}（{{ p.key }}）{{ p.key === 'tabbit-intl' ? ' · 手机号未开放，请用 Cookie' : '' }}</option></select></div><div class="field"><label>手机号</label><input class="input" v-model="sms.phone" placeholder="输入接收验证码的手机号" /></div><div class="field"><label>短信验证码</label><div class="sms-code"><input class="input" v-model="sms.code" placeholder="输入验证码" /><button class="btn" :disabled="sms.sending || sms.timer > 0" @click="smsSend">{{ sms.timer > 0 ? `${sms.timer}s 后可重发` : (sms.sending ? '发送中…' : '发送验证码') }}</button></div></div><p v-if="smsIntl" class="sms-msg" style="color:var(--warn,#d97706)">⚠️ Tabbit 国际版 beta 期仅支持 Google 登录，手机号发码会被上游拒绝（auth.noBetaPermission）。请关闭此窗口，用「＋ 新增账号 → Tabbit 国际版 → Cookie」添加：浏览器挂出口代理登录 web.tabbit.ai → F12 复制 Cookie。</p>
           <p v-if="sms.msg" class="sms-msg">{{ sms.msg }}</p></div><footer class="modal-foot"><button class="btn" @click="sms.show = false">取消</button><button class="btn primary" :disabled="sms.verifying" @click="smsVerify">{{ sms.verifying ? '验证并添加中…' : '验证并添加' }}</button></footer></section>
-    <section v-if="gintl.show" class="modal open" role="dialog" aria-modal="true">
-      <header class="modal-head">Tabbit 国际版 · Google 一键授权</header>
-      <div class="modal-body">
-        <p style="font-size:13px;color:var(--muted,#889);line-height:1.7">打开下方链接（需挂出口代理访问 Google / web.tabbit.ai），用您的 Google 账号登录，成功后自动建号加入面板。无需安装客户端，手机电脑均可。</p>
-        <div class="field"><label>① 一次性授权 token（10 分钟有效，用后即焚）</label><input class="input" readonly :value="gintl.token || '点击下方按钮生成'" /></div>
-        <div class="field"><label>② 手机/电脑浏览器打开（自动带 token）</label><input class="input" readonly :value="gintl.loginUrl" /><div style="margin-top:6px;display:flex;gap:8px"><button class="btn" @click="copyText(gintl.loginUrl)">复制链接</button></div></div>
-        <div class="field"><label>③ 油猴脚本（保存为 tabbit-google.user.js 后导入 Tampermonkey）</label><textarea class="input" rows="6" readonly :value="gintl.injectScript" style="font-family:monospace;font-size:11px;resize:vertical"></textarea><div style="margin-top:6px;display:flex;gap:8px"><button class="btn" @click="copyText(gintl.injectScript)">复制脚本</button><button class="btn" @click="downloadScript">下载 .user.js</button></div></div>
-        <p style="font-size:12px;color:var(--muted,#889);line-height:1.6;margin-top:10px">④ 使用方法（任选其一）：
-        <br/>· <b>油猴（推荐手机）</b>：手机装 Kiwi/Firefox + Tampermonkey，下载上方的 .user.js 并导入；打开第②步链接时页面自动出现「使用 Google 账号登录」卡片，点击即可。
-        <br/>· <b>控制台（电脑）</b>：打开链接后按 F12 → Console 粘贴上方脚本 JS 再回车。
-        <br/>⑤ 登录完成后回到本面板，账号池自动出现新账号。</p>
-        <p v-if="gintl.err" style="color:#d33;font-size:13px">{{ gintl.err }}</p>
-        <div style="margin-top:14px;display:flex;gap:8px"><button class="btn primary" :disabled="gintl.loading" @click="googleIntlStart">{{ gintl.loading ? '生成中…' : '生成授权链接' }}</button><button class="btn" @click="closeGoogleIntl">关闭</button></div>
-      </div>
-    </section>
   </section>
 </template>
 
@@ -194,84 +179,7 @@ async function copyWorkbuddyUrl() {
 // ── 手机验证码添加（发短信建号） ──
 const smsPlatforms = computed(() => platforms.value.filter(p => ['loomy', 'tabbit-domestic', 'tabbit-intl'].includes(p.key)))
 const smsIntl = computed(() => smsPlatforms.value.find(p => p.id === sms.value?.platform_id)?.key === 'tabbit-intl')
-const gintl = ref({ show: false, loading: false, token: '', loginUrl: '', injectScript: '', err: '' })
 const sms = ref({ show: false, platform_id: null, phone: '', code: '', msgid: '', sent: false, sentKey: '', msg: '', timer: 0, sending: false, verifying: false, tick: null })
-
-function openGoogleIntl() {
-  gintl.value = { show: true, loading: false, token: '', loginUrl: '', injectScript: '', err: '' }
-  googleIntlStart()
-}
-function closeGoogleIntl() { gintl.value.show = false }
-function downloadScript() {
-  const content = gintl.value.injectScript
-  if (!content) return
-  const blob = new Blob([content], { type: 'text/javascript' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = 'tabbit-google.user.js'
-  document.body.appendChild(a); a.click(); a.remove()
-  URL.revokeObjectURL(url)
-}
-function googleIntlStart() {
-  gintl.value.loading = true; gintl.value.err = ''
-  fetch('/api/login/tabbit/google-start', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ platform: 'tabbit-intl', tag: 'panel' })
-  })
-  .then(r => r.json())
-  .then(d => {
-    if (!d.ok) throw new Error(d.detail || '生成失败')
-    gintl.value.token = d.token
-    const loginUrl = `https://web.tabbit.ai/login?aam_token=${encodeURIComponent(d.token)}`
-    gintl.value.loginUrl = loginUrl
-    // 生成油猴脚本内容(含此 token + 面板地址)
-    const cid = d.client_id
-    const panel = location.origin
-    gintl.value.injectScript = `// ==UserScript==
-// @name         Tabbit 国际版 Google 登录
-// @namespace    aam-panel
-// @version      1.0
-// @description  在 web.tabbit.ai 用 Google 登录并自动加入 AAM 面板
-// @match        https://web.tabbit.ai/*
-// @grant        none
-// @run-at       document-idle
-// ==/UserScript==
-(function(){
-  window.__AAM_TB_TOKEN__ = ${JSON.stringify(d.token)};
-  var CID=${JSON.stringify(cid)}, PANEL=${JSON.stringify(panel)};
-  var ready=function(fn){if(document.readyState!=='loading'){fn();}else{document.addEventListener('DOMContentLoaded',fn);}};
-  ready(function(){
-    if(document.getElementById('aam_tb_box'))return;
-    var box=document.createElement('div');box.id='aam_tb_box';
-    box.style.cssText='position:fixed;top:18px;left:50%;transform:translateX(-50%);z-index:2147483647;background:#fff;border-radius:14px;box-shadow:0 10px 40px rgba(0,0,0,.3);padding:20px 24px;font:14px/1.5 sans-serif;min-width:300px;max-width:92vw;text-align:center';
-    box.innerHTML='<div style="font-weight:700;font-size:16px">Tabbit 国际版登录</div><div style="color:#999;font-size:12px;margin-bottom:14px">用 Google 账号授权，成功后自动添加到面板</div><div id="aam_gbtn" style="display:flex;justify-content:center"></div><div id="aam_msg" style="margin-top:12px;font-size:13px;color:#888;min-height:18px"></div><div style="margin-top:8px"><a href="javascript:void(0)" id="aam_close" style="color:#bbb;font-size:12px">关闭</a></div>';
-    document.body.appendChild(box);
-    document.getElementById('aam_close').onclick=function(){box.remove();};
-    var msg=function(t,c){var m=document.getElementById('aam_msg');if(m){m.textContent=t;m.style.color=c||'#888';}};
-    var loadGIS=function(cb){if(window.google&&window.google.accounts)return cb();var s=document.createElement('script');s.src='https://accounts.google.com/gsi/client';s.onload=cb;s.onerror=function(){msg('Google 脚本加载失败','#d33');};document.head.appendChild(s);};
-    loadGIS(function(){
-      try{
-        window.google.accounts.id.initialize({
-          client_id:CID,
-          callback:function(resp){if(!resp||!resp.credential){msg('未获取到凭证','#d33');return;}
-            msg('已获取凭证，正在登录 Tabbit…');
-            fetch(PANEL+'/api/login/tabbit/google-callback',{method:'POST',headers:{'Content-Type':'application/json'},
-              body:JSON.stringify({id_token:resp.credential,token:window.__AAM_TB_TOKEN__})})
-            .then(function(r){return r.text().then(function(t){var j={};try{j=JSON.parse(t);}catch(e){j={detail:t.slice(0,200)}}return{ok:r.ok,j:j};});})
-            .then(function(x){if(x.ok&&x.j&&x.j.ok){msg('✅ 登录成功，账号已加入面板','#0a0');setTimeout(function(){box.remove();},2600);}else{var d=(x.j&&(x.j.detail||x.j.message))||JSON.stringify(x.j);msg('❌ '+d,'#d33');}})
-            .catch(function(e){msg('❌ 面板通信失败: '+e.message,'#d33');});
-          },
-          auto_select:false,itp_support:true,ux_mode:'popup'
-        });
-        window.google.accounts.id.renderButton(document.getElementById('aam_gbtn'),{type:'standard',theme:'outline',size:'large',text:'signin_with',shape:'rectangular',width:280,locale:'zh_CN'});
-      }catch(e){msg('初始化失败: '+e.message,'#d33');}
-    });
-  });
-})();`
-  })
-  .catch(e => { gintl.value.err = (e && e.message) || String(e) })
-  .finally(() => { gintl.value.loading = false })
-}
 function openSmsLogin() {
   sms.value.show = true
   sms.value.platform_id = smsPlatforms.value[0]?.id || null
