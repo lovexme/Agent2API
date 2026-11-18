@@ -17,6 +17,30 @@ UPSTREAM = "https://copilot.tencent.com"
 ORIGIN = "https://www.codebuddy.cn"
 UA = "CLI/2.63.2 CodeBuddy/2.63.2"
 STATE_FILE = DATA_DIR / "workbuddy_oauth_states.json"
+_REDACT_KEYS = {
+    "credential", "refreshToken", "accessToken", "access_token", "refresh_token",
+    "api_key", "apiKey", "id_token", "client_secret", "password", "authorization",
+    "session", "cookie", "secret", "token",
+}
+
+
+def _redact(item):
+    """递归移除凭据字段并脱敏用户令牌。"""
+    if isinstance(item, dict):
+        redacted = {}
+        for key, value in item.items():
+            if key == "credential":
+                continue
+            if key in _REDACT_KEYS:
+                redacted[key] = "***"
+            else:
+                redacted[key] = _redact(value)
+        return redacted
+    if isinstance(item, list):
+        return [_redact(value) for value in item]
+    return item
+
+
 TTL = 900
 
 
@@ -109,10 +133,9 @@ async def status(state: str = Query(..., min_length=8, max_length=128)):
     if session.get("account_id"):
         account = db.get_account(session["account_id"])
         if account:
-            account.pop("credential", None)
             account["quota_json"] = db.parse_json(account.get("quota_json"))
             account["user_info"] = db.parse_json(account.get("user_info"))
-        return {"ok": True, "status": "done", "account": account}
+        return _redact({"ok": True, "status": "done", "account": account})
 
     token_data = await _upstream("GET", f"{UPSTREAM}/v2/plugin/auth/token?state={state}")
     access_token = str((token_data or {}).get("accessToken") or "")
@@ -130,14 +153,18 @@ async def status(state: str = Query(..., min_length=8, max_length=128)):
                  "expiresIn": token_data.get("expiresIn", 0),
                  "domain": token_data.get("domain", "")}
     with db.connect() as conn:
-        existing = conn.execute("SELECT id FROM accounts WHERE platform_id=4 AND json_extract(user_info, '$.uid')=?", (uid,)).fetchone()
+        row = conn.execute("SELECT id FROM platforms WHERE key='workbuddy'").fetchone()
+        if not row:
+            raise HTTPException(500, "缺少 key=workbuddy 的平台记录,请先在「平台」页创建(adapter=openai_compat)")
+        platform_id = row["id"]
+        existing = conn.execute("SELECT id FROM accounts WHERE platform_id=? AND json_extract(user_info, '$.uid')=?", (platform_id, uid)).fetchone()
         if existing:
             account_id = existing["id"]
             conn.execute("UPDATE accounts SET name=?,credential=?,credential_type='token',user_info=? WHERE id=?",
                          (f"WorkBuddy-{uid[-4:]}", access_token, json.dumps(user_info, ensure_ascii=False), account_id))
         else:
-            cur = conn.execute("INSERT INTO accounts(platform_id,name,credential,credential_type,user_info) VALUES(4,?,?,?,?)",
-                               (f"WorkBuddy-{uid[-4:]}", access_token, "token", json.dumps(user_info, ensure_ascii=False)))
+            cur = conn.execute("INSERT INTO accounts(platform_id,name,credential,credential_type,user_info) VALUES(?,?,?,?,?)",
+                               (platform_id, f"WorkBuddy-{uid[-4:]}", access_token, "token", json.dumps(user_info, ensure_ascii=False)))
             account_id = cur.lastrowid
     with _states_lock():
         states = _states()
@@ -146,4 +173,4 @@ async def status(state: str = Query(..., min_length=8, max_length=128)):
             _save_states(states)
     from .api import check_account
     account = await check_account(account_id)
-    return {"ok": True, "status": "done", "account": account}
+    return _redact({"ok": True, "status": "done", "account": account})

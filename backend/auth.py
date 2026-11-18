@@ -84,13 +84,24 @@ def _cookie_ok(panel_key: str, cookie: str) -> bool:
     return _safe_eq(sig, _sign(panel_key, expire_ts))
 
 
+def _cookie_authed(request: Request) -> bool:
+    """仅使用签名 Cookie 校验管理员会话。"""
+    panel_key = _load_or_create_panel_key()
+    cookie = request.cookies.get(COOKIE_NAME, "")
+    return bool(cookie) and _cookie_ok(panel_key, cookie)
+
+
 def _request_authed(request: Request, x_admin_key: str | None) -> bool:
     header = (x_admin_key or "").strip()
     panel_key = _load_or_create_panel_key()
     if _safe_eq(header, panel_key):
         return True
-    cookie = request.cookies.get(COOKIE_NAME, "")
-    return bool(cookie) and _cookie_ok(panel_key, cookie)
+    if header:
+        client = request.client
+        ip = client.host if client else "?"
+        if not db.rate_limit("admin_login", ip, 1):
+            raise HTTPException(429, "登录过于频繁，请稍后再试")
+    return _cookie_authed(request)
 
 
 def require_admin(request: Request, x_admin_key: str | None = Header(None)):
@@ -100,8 +111,12 @@ def require_admin(request: Request, x_admin_key: str | None = Header(None)):
 
 
 def require_admin_ws(ws) -> bool:
-    """WebSocket 手写鉴权：不通过时关闭连接并返回 False。"""
-    if not _request_authed(ws, ws.headers.get("x-admin-key")):
+    """WebSocket 手写鉴权：不通过时关闭连接并返回 False。限频 429 等异常也按拒绝处理。"""
+    try:
+        authed = _request_authed(ws, ws.headers.get("x-admin-key"))
+    except HTTPException:
+        authed = False
+    if not authed:
         return False
     return True
 
@@ -138,5 +153,5 @@ async def admin_logout():
 
 
 @router.get("/me")
-async def admin_me(request: Request, x_admin_key: str | None = Header(None)):
-    return {"ok": True, "authed": _request_authed(request, x_admin_key)}
+async def admin_me(request: Request):
+    return {"ok": True, "authed": _cookie_authed(request)}

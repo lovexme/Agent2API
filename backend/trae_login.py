@@ -7,6 +7,7 @@
 import json
 import os
 import time
+import os
 import secrets
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,7 +23,7 @@ from .auth import require_admin, require_admin_ws
 router = APIRouter(prefix="/api/trae-login", dependencies=[Depends(require_admin)])
 novnc_router = APIRouter()  # 挂 /novnc/*
 
-TRAE2API_DATA = Path(os.environ.get("TRAE2API_DATA", str(Path(__file__).resolve().parent.parent / "data" / "accounts.json")))
+TRAE2API_DATA = Path(os.environ.get("TRAE2API_DATA", "/opt/trae2api/data/accounts.json"))
 BOX_CDP = "http://127.0.0.1:9223/json"
 NOVNC_UP = "http://127.0.0.1:6080"
 TRAE2API_PAGE = "http://127.0.0.1:8770/web/login"
@@ -55,7 +56,7 @@ async def asyncio_wait_close(ws):
         pass
 
 
-SLIDER_FILE = Path(os.environ.get("AAM_SLIDERS_FILE", str(Path(__file__).resolve().parent.parent / "data" / "sliders.json")))
+SLIDER_FILE = Path(os.environ.get("AAM_SLIDER_FILE", str(Path(__file__).resolve().parent.parent / "data" / "sliders.json")))
 _PUBLIC_BASE_CACHE = {"at": 0.0, "value": ""}
 
 

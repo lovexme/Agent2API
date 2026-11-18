@@ -72,9 +72,11 @@ async def _api_post(path: str, param: dict):
     async with httpx.AsyncClient(timeout=25) as c:
         r = await c.post(ACCOUNT_BASE + path, content=body, headers=_sign_headers("POST", path, body))
     try:
-        return r.json()
+        data = r.json()
     except Exception:
-        return {"raw": r.text[:300]}
+        data = {}
+    # 结构化校验：只接受 dict；非预期响应统一按失败处理，避免 AttributeError 500
+    return data if isinstance(data, dict) else {}
 
 
 @router.post("/loomy/send")
@@ -94,7 +96,7 @@ async def loomy_send(request: Request, phone: str = ""):
     msgid = data.get("msgid") or data.get("msgId") or payload.get("msgid")
     code = str(payload.get("code", ""))
     ok = code in ("0", "000000") or bool(data.get("success")) or bool(data.get("result")) is True
-    return {"ok": ok, "msgid": msgid or "", "payload": payload}
+    return {"ok": ok, "msgid": msgid or ""}
 
 
 @router.post("/loomy/verify")
@@ -114,8 +116,7 @@ async def loomy_verify(request: Request, body: LoomyVerifyInput):
     data = payload.get("data") or {}
     session = data.get("session") or payload.get("session") or data.get("sessionId") or payload.get("sessionId")
     if not session:
-        desc = data.get("msg") or data.get("message") or payload.get("msg") or json.dumps(payload, ensure_ascii=False)[:200]
-        raise HTTPException(400, f"验证码校验失败：{desc}")
+        return {"ok": False, "status": "failed", "msg": "验证失败"}
     # 建号（Loomy 平台），同时记录 session 到期时间（14 天）
     import time as _t
     expire_at = _t.strftime("%Y-%m-%d %H:%M:%S", _t.localtime(_t.time() + 1209600))
@@ -131,6 +132,4 @@ async def loomy_verify(request: Request, body: LoomyVerifyInput):
         acct_id = cur.lastrowid
     from .api import check_account
     item = await check_account(acct_id)
-    if isinstance(item, dict):
-        item.pop("credential", None)
-    return {"ok": True, "session": session[:16] + "...", "account": item}
+    return {"ok": True, "status": "success", "msg": "验证成功"}

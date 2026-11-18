@@ -1,99 +1,11 @@
 <template>
-  <div>
-    <div class="heading">
-      <div>
-        <div class="eyebrow">网关凭据</div>
-        <h1>API 密钥</h1>
-        <div class="sub">自定义调用密钥，可分发给不同客户端或用途</div>
-      </div>
-      <button class="btn" @click="openCreate">＋ 新建密钥</button>
-    </div>
-
-    <div class="gateway-panel">
-      <h2>主密钥（Master Key）</h2>
-      <div class="field">
-        <div class="keyrow">
-          <input :value="masterKey" readonly @click="copy(masterKey)" />
-          <button class="btn secondary sm" @click="copy(masterKey)">复制</button>
-        </div>
-        <span class="hint">主密钥在「设置」中修改；下方自定义密钥与其等效，可单独启停、重置。</span>
-      </div>
-    </div>
-
-    <div v-loading="loading" style="min-height: 200px">
-      <div class="table-wrap" v-if="items.length">
-        <table class="table">
-          <thead>
-            <tr><th>名称</th><th>密钥</th><th>绑定平台</th><th>调用</th><th>最后使用</th><th>状态</th><th style="text-align:right">操作</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="t in items" :key="t.id">
-              <td>
-                <b>{{ t.name }}</b>
-                <div v-if="t.note" class="muted" style="font-size:11px">{{ t.note }}</div>
-              </td>
-              <td>
-                <code style="font-size:11.5px;color:#b9c9bf">{{ showFull[t.id] ? t.token : maskToken(t.token) }}</code>
-                <button class="iconbtn" style="margin-left:6px" @click="toggleShow(t)">{{ showFull[t.id] ? '隐藏' : '显示' }}</button>
-                <button class="iconbtn" style="margin-left:4px" @click="copy(t.token)">复制</button>
-              </td>
-              <td>{{ t.platform_key || '全部平台' }}</td>
-              <td class="muted">{{ t.request_count }} 次</td>
-              <td class="muted">{{ t.last_used_at || '未使用' }}</td>
-              <td>
-                <span class="state" :class="t.enabled ? 'active-state' : 'disabled-state'">{{ t.enabled ? '启用' : '停用' }}</span>
-              </td>
-              <td style="text-align:right;white-space:nowrap">
-                <button class="iconbtn" @click="toggleEnabled(t)">{{ t.enabled ? '停用' : '启用' }}</button>
-                <button class="iconbtn" style="margin-left:4px" @click="doReset(t)">重置</button>
-                <button class="iconbtn" style="margin-left:4px;color:var(--red)" @click="doDelete(t)">删除</button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div v-else-if="!loading" class="empty">
-        <h3>还没有自定义密钥</h3>
-        <p>点击「新建密钥」生成独立 API Key，与主密钥等效，便于分组管理</p>
-        <button class="btn" @click="openCreate">＋ 新建密钥</button>
-      </div>
-    </div>
-
-    <el-dialog v-model="dialog.show" title="新建 API 密钥" width="500px">
-      <div class="formgrid single">
-        <div class="field">
-          <label>名称</label>
-          <input v-model="dialog.name" placeholder="如：Cherry Studio / 手机端" />
-        </div>
-        <div class="field">
-          <label>绑定平台（可选）</label>
-          <select v-model="dialog.platform_key">
-            <option value="">全部平台</option>
-            <option v-for="p in platforms" :key="p.key" :value="p.key">{{ p.name }}</option>
-          </select>
-          <span class="hint">留空表示可调用所有已接入平台的模型</span>
-        </div>
-        <div class="field">
-          <label>备注（可选）</label>
-          <input v-model="dialog.note" placeholder="用途说明" />
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn secondary" @click="dialog.show = false">取消</button>
-        <button class="btn" :disabled="saving" @click="save">{{ saving ? '生成中…' : '生成密钥' }}</button>
-      </div>
-    </el-dialog>
-
-    <el-dialog v-model="created.show" title="密钥已生成" width="560px">
-      <p style="color:var(--muted);font-size:13px;margin-top:0">请立即复制保存，密钥可随时在列表中查看：</p>
-      <div class="keyrow">
-        <input :value="created.value" readonly />
-        <button class="btn secondary sm" @click="copy(created.value)">复制</button>
-      </div>
-      <div class="form-actions">
-        <button class="btn" @click="created.show = false">完成</button>
-      </div>
-    </el-dialog>
+  <div class="view-wrap">
+    <div class="page-head"><div><div class="page-title">API 密钥</div><div class="page-desc">客户端访问 /v1 的密钥 · 独立管理、重置与停用</div></div><div class="head-actions"><button class="btn primary" type="button" @click="openCreate">＋ 新建密钥</button></div></div>
+    <div class="card master-card"><div class="card-head"><span>主密钥</span><span class="badge blue">Gateway Key</span></div><div class="card-body master-body"><div class="mono master-key">{{ masterKey }}</div><button class="btn ghost sm" type="button" @click="copy(masterKey)">复制</button></div><div class="card-body master-help">主密钥可在「设置」中修改；下方自定义密钥与其等效，可单独启停、重置。</div></div>
+    <div v-loading="loading" class="card token-card"><div v-if="items.length" class="tbl-wrap"><table class="tbl"><thead><tr><th>名称</th><th>密钥</th><th>绑定平台</th><th class="r">调用</th><th>最后使用</th><th>状态</th><th class="r">操作</th></tr></thead><tbody><tr v-for="t in items" :key="t.id"><td><strong>{{ t.name }}</strong><div v-if="t.note" class="muted token-note">{{ t.note }}</div></td><td><div class="token-value"><code class="mono">{{ showFull[t.id] ? t.token : maskToken(t.token) }}</code><button class="btn ghost sm" type="button" @click="toggleShow(t)">{{ showFull[t.id] ? '隐藏' : '显示' }}</button><button class="btn ghost sm" type="button" @click="copy(t.token)">复制</button></div></td><td>{{ t.platform_key || '全部平台' }}</td><td class="r num muted">{{ t.request_count }}</td><td class="muted">{{ t.last_used_at || '未使用' }}</td><td><span class="badge" :class="t.enabled ? 'ok' : 'dim'">{{ t.enabled ? '启用' : '停用' }}</span></td><td class="r actions-cell"><button class="btn ghost sm" type="button" @click="toggleEnabled(t)">{{ t.enabled ? '停用' : '启用' }}</button><button class="btn ghost sm" type="button" @click="doReset(t)">重置</button><button class="btn danger sm" type="button" @click="doDelete(t)">删除</button></td></tr></tbody></table></div><div v-else-if="!loading" class="empty-state"><strong>还没有自定义密钥</strong><span>创建独立 API Key，便于按客户端或用途分组管理。</span><button class="btn primary sm" type="button" @click="openCreate">＋ 新建密钥</button></div></div>
+    <div v-if="dialog.show || created.show" class="mask open"></div>
+    <div v-if="dialog.show" class="modal open" role="dialog" aria-modal="true"><div class="modal-head">新建 API 密钥<button class="modal-close" type="button" @click="dialog.show = false">×</button></div><div class="modal-body"><div class="field"><label>名称</label><input v-model="dialog.name" class="input" placeholder="如：Cherry Studio / 手机端" /></div><div class="field"><label>绑定平台（可选）</label><select v-model="dialog.platform_key" class="select"><option value="">全部平台</option><option v-for="p in platforms" :key="p.key" :value="p.key">{{ p.name }}</option></select><span class="hint">留空 = 可调用所有平台;/v1/models 与 /chat/completions 都按此绑定过滤,调用其它平台模型会返回 403</span></div><div class="field"><label>备注（可选）</label><input v-model="dialog.note" class="input" placeholder="用途说明" /></div></div><div class="modal-foot"><button class="btn ghost" type="button" @click="dialog.show = false">取消</button><button class="btn primary" type="button" :disabled="saving" @click="save">{{ saving ? '生成中…' : '生成密钥' }}</button></div></div>
+    <div v-if="created.show" class="modal open" role="dialog" aria-modal="true"><div class="modal-head">密钥已生成<button class="modal-close" type="button" @click="created.show = false">×</button></div><div class="modal-body"><p class="modal-copy">请立即复制保存，密钥可随时在列表中查看：</p><div class="keyrow"><input :value="created.value" class="input mono" readonly /><button class="btn secondary sm" type="button" @click="copy(created.value)">复制</button></div></div><div class="modal-foot"><button class="btn primary" type="button" @click="created.show = false">完成</button></div></div>
   </div>
 </template>
 
@@ -102,6 +14,7 @@ import { onMounted, ref } from 'vue'
 import { ElMessageBox } from 'element-plus'
 import { getTokens, createToken, updateToken, deleteToken, resetToken, getPlatforms } from '../api'
 import { toastOk, toastErr } from '../lib/toast'
+import { copyText } from '../lib/clipboard'
 
 const items = ref([])
 const platforms = ref([])
@@ -115,8 +28,10 @@ const created = ref({ show: false, value: '' })
 const maskToken = (t) => t.slice(0, 10) + '••••••••' + t.slice(-4)
 function toggleShow(t) { showFull.value = { ...showFull.value, [t.id]: !showFull.value[t.id] } }
 
-function copy(text) {
-  navigator.clipboard?.writeText(text).then(() => toastOk('已复制到剪贴板')).catch(() => toastErr('复制失败，请手动选择'))
+async function copy(text) {
+  const ok = await copyText(text)
+  if (ok) toastOk('已复制到剪贴板')
+  else toastErr('复制失败,请手动选择')
 }
 
 async function load() {
@@ -189,3 +104,6 @@ async function doDelete(t) {
 
 onMounted(load)
 </script>
+
+<style scoped>
+.master-card{margin-bottom:12px}.master-body{display:flex;align-items:center;gap:10px}.master-key{flex:1;min-width:0;padding:10px 12px;background:var(--surface-inset);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.master-help{padding-top:0;color:var(--text-3);font-size:11.5px}.token-card{overflow:hidden}.token-note{font-size:11px;margin-top:2px}.token-value{display:flex;align-items:center;gap:4px;min-width:230px}.token-value code{min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--text-2)}.actions-cell{white-space:nowrap}.actions-cell .btn+.btn,.token-value .btn+.btn{margin-left:3px}.modal-close{margin-left:auto;border:0;background:transparent;color:var(--text-3);font-size:20px;line-height:1;cursor:pointer;padding:0 2px}.modal-close:hover{color:var(--text)}.modal-copy{color:var(--text-2);margin:0 0 12px}.keyrow{display:flex;align-items:center;gap:8px}.keyrow .input{flex:1;min-width:0}@media(max-width:640px){.master-body{align-items:stretch;flex-direction:column}.master-body .btn{align-self:flex-start}}</style>

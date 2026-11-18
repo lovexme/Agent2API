@@ -44,10 +44,13 @@ class OpenAICompatAdapter(PlatformAdapter):
             return {"status": "error", "status_msg": "HTTP %s" % r.status_code,
                     "member_level": "", "quota_pct": None, "quota_json": {}, "user_info": {}}
         count = 0
+        ids = []
         try:
             payload = r.json()
             data = payload.get("data") if isinstance(payload, dict) else payload
-            count = len(data or [])
+            data = data or []
+            ids = [m.get("id") for m in data if isinstance(m, dict) and m.get("id")]
+            count = len(ids)  # 只计有效模型 id:否则 count>0 却 chat_probe=skip:no-models 自相矛盾
         except Exception:
             pass
         quota = {"models": count, "openai_compat": True}
@@ -61,8 +64,76 @@ class OpenAICompatAdapter(PlatformAdapter):
                     break
             except Exception:
                 continue
-        return {"status": "active", "status_msg": "", "member_level": "openai",
-                "quota_pct": None, "quota_json": quota, "user_info": {}}
+        # 真探活:仅 /models 返回 200 无法发现"模型列表能拉、对话全挂"(如上游 relay 无凭据)。
+        # 发一条 max_tokens=1 的最小 completion;失败即判"上游对话不可用"。
+        probe = self._pick_probe_model(ids)
+        if not probe:
+            # 上游 /models 返回空列表(如 relay 冷缓存):无法探活,不静默判绿,在 status_msg 里说明。
+            quota["chat_probe"] = "skip:no-models"
+        else:
+            try:
+                async with self._client() as c:
+                    cr = await c.post(self.base + "/chat/completions", headers=self._headers(account),
+                                      json={"model": probe, "max_tokens": 1, "stream": False,
+                                            "messages": [{"role": "user", "content": "ping"}]},
+                                      timeout=60)
+            except Exception as e:
+                quota["chat_probe"] = "conn:%s" % e.__class__.__name__
+                return {"status": "error", "status_msg": "上游对话不可用(连接失败:%s)" % e.__class__.__name__,
+                        "member_level": "openai", "quota_pct": None, "quota_json": quota, "user_info": {}}
+            if cr.status_code >= 400:
+                detail = self._err_text(cr)
+                quota["chat_probe"] = "HTTP %s %s" % (cr.status_code, detail)
+                return {"status": "error",
+                        "status_msg": "上游对话不可用(HTTP %s%s)" % (cr.status_code, (" " + detail) if detail else ""),
+                        "member_level": "openai", "quota_pct": None, "quota_json": quota, "user_info": {}}
+            if not self._has_choices(cr):
+                quota["chat_probe"] = "empty-choices:%s" % probe
+                return {"status": "error", "status_msg": "上游对话返回空响应(无 choices)",
+                        "member_level": "openai", "quota_pct": None, "quota_json": quota, "user_info": {}}
+            quota["chat_probe"] = "ok:%s" % probe
+        return {"status": "active", "status_msg": "" if probe else "模型清单为空,未做对话探活",
+                "member_level": "openai", "quota_pct": None, "quota_json": quota, "user_info": {}}
+
+    @staticmethod
+    def _pick_probe_model(ids):
+        """挑最便宜可用的探活模型:优先 flash/mini/lite/small 等小模型。"""
+        if not ids:
+            return ""
+        for kw in ("flash", "mini", "lite", "small", "nano", "haiku"):
+            for i in ids:
+                if kw in i.lower():
+                    return i
+        return ids[0]
+
+    @staticmethod
+    def _err_text(resp):
+        """从上游错误响应里提炼一句话(截断),用于 status_msg。"""
+        try:
+            t = resp.text or ""
+        except Exception:
+            return ""
+        try:
+            j = resp.json()
+            if isinstance(j, dict):
+                e = j.get("error")
+                if isinstance(e, dict):
+                    t = e.get("message") or e.get("type") or t
+                elif isinstance(e, str):
+                    t = e
+                elif j.get("detail"):
+                    t = j["detail"] if isinstance(j["detail"], str) else json.dumps(j["detail"], ensure_ascii=False)
+        except Exception:
+            pass
+        return " ".join(str(t).split())[:160]
+
+    @staticmethod
+    def _has_choices(resp):
+        try:
+            j = resp.json()
+        except Exception:
+            return False
+        return bool(isinstance(j, dict) and j.get("choices"))
 
     async def models(self, account):
         async with self._client() as c:

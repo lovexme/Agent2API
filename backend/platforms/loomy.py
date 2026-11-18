@@ -52,8 +52,11 @@ class LoomyAdapter(PlatformAdapter):
                                 headers=self._headers(account, json_body=False))
             if r.status_code == 200:
                 payload = r.json()
+            elif r.status_code in (401, 403):
+                return self._expired("session 失效(HTTP %s),请重新登录" % r.status_code)
             else:
-                payload = {}
+                return {"status": "error", "status_msg": "Loomy HTTP %s" % r.status_code,
+                        "member_level": "", "quota_pct": None, "quota_json": {}, "user_info": {}}
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (401, 403):
                 return self._expired("session 失效（HTTP %s），请重新登录" % e.response.status_code)

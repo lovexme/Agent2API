@@ -1,73 +1,30 @@
 <template>
-  <div>
-    <div class="heading">
-      <div>
-        <div class="eyebrow">账户群健康度</div>
-        <h1>总览</h1>
-        <div class="sub">所有平台账号与网关活动一目了然</div>
-      </div>
-      <button class="btn secondary sm" @click="load">↻ 刷新</button>
+  <div class="dashboard-view">
+    <div class="page-head">
+      <div><div class="page-title">总览</div><div class="page-desc">所有平台账号与网关活动一目了然</div></div>
+      <div class="head-actions"><button class="btn ghost" @click="load">↻ 刷新</button></div>
     </div>
-
-    <div v-loading="loading" style="min-height: 240px">
-      <div class="kpis" style="margin-bottom: 14px">
-        <div class="kpi">
-          <div class="kpi-top">账号总数 <span>01</span></div>
-          <strong>{{ stats.total_accounts || 0 }}</strong>
-          <span class="delta">{{ enabledAccounts }} 个启用</span>
-        </div>
-        <div class="kpi">
-          <div class="kpi-top">活跃账号 <span>02</span></div>
-          <strong>{{ stats.active_accounts || 0 }}</strong>
-          <span class="delta good">占全部 {{ pctActive }}%</span>
-        </div>
-        <div class="kpi">
-          <div class="kpi-top">今日请求 <span>03</span></div>
-          <strong>{{ stats.requests_today || 0 }}</strong>
-          <span class="delta">经统一网关</span>
-        </div>
-        <div class="kpi">
-          <div class="kpi-top">今日错误 <span>04</span></div>
-          <strong>{{ stats.errors_today || 0 }}</strong>
-          <span class="delta" :class="errCls">{{ errRate }}% 错误率</span>
-        </div>
+    <div v-loading="loading" class="dashboard-body">
+      <div class="kpis">
+        <div class="card kpi"><div class="kpi-label">账号总数</div><div class="kpi-value">{{ stats.total_accounts || 0 }}</div><div class="kpi-foot"><span class="trend up">{{ enabledAccounts }} 个启用</span></div></div>
+        <div class="card kpi"><div class="kpi-label">活跃账号</div><div class="kpi-value">{{ stats.active_accounts || 0 }}</div><div class="kpi-foot"><span class="trend up">占全部 {{ pctActive }}%</span></div></div>
+        <div class="card kpi"><div class="kpi-label">今日请求</div><div class="kpi-value">{{ stats.requests_today || 0 }}</div><div class="kpi-foot">经统一网关</div></div>
+        <div class="card kpi"><div class="kpi-label">今日错误</div><div class="kpi-value">{{ stats.errors_today || 0 }}</div><div class="kpi-foot"><span class="trend" :class="errCls">{{ errRate }}% 错误率</span></div></div>
       </div>
-
-      <div class="section-head"><h2>平台健康</h2><span class="muted">{{ connectedPlatforms }} 个平台接入</span></div>
-      <div class="platforms">
-        <div v-for="p in platforms" :key="p.id" class="platform">
-          <div class="platform-head">
-            <div class="platform-title"><span class="logo" :class="logoClass(p.key)">{{ logoText(p.key) }}</span>{{ p.name }}</div>
-            <span class="state" :class="p.account_count ? (p.active_count ? 'active-state' : 'unknown-state') : 'unknown-state'">
-              {{ p.account_count ? p.active_count + ' 个有效' : '未接入' }}
-            </span>
-          </div>
-          <p v-if="p.account_count">共 {{ p.account_count }} 个账号 · 平均积分用量</p>
-          <p v-else>尚未添加账号 · 请到「账号管理」接入</p>
-          <div class="minirow"><span>平均用量</span><b>{{ p.avg_quota_pct != null ? p.avg_quota_pct.toFixed(1) + '%' : '—' }}</b></div>
-          <div class="bar"><i :class="platformBar(p)" :style="p.avg_quota_pct != null ? { width: Math.min(p.avg_quota_pct, 100) + '%' } : {}"></i></div>
-        </div>
+      <div class="cols-2 dashboard-section">
+        <div class="card"><div class="card-head">平台健康 <span class="muted dashboard-head-note">{{ connectedPlatforms }} 个平台接入</span></div><div class="card-body tight rank-list">
+          <div v-for="(p, index) in platforms" :key="p.id" class="rank-row"><span class="rank-idx">{{ String(index + 1).padStart(2, '0') }}</span><div class="rank-main"><div class="rank-name">{{ p.name }}</div><div class="rank-sub">{{ p.account_count ? `${p.active_count} / ${p.account_count} 个账号有效` : '尚未接入账号' }}</div></div><div class="rank-bar"><div class="bar" :class="platformBar(p)"><i :style="p.avg_quota_pct != null ? { width: Math.min(p.avg_quota_pct, 100) + '%' } : {}"></i></div></div></div>
+          <div v-if="!platforms.length" class="empty-row">暂无平台数据</div>
+        </div></div>
+        <div class="card"><div class="card-head">平台使用分布</div><div class="card-body tight rank-list">
+          <div v-for="(p, index) in platforms" :key="`usage-${p.id}`" class="rank-row"><span class="rank-idx">{{ String(index + 1).padStart(2, '0') }}</span><div class="rank-main"><div class="rank-name">{{ p.name }}</div><div class="rank-sub">平均积分用量 {{ p.avg_quota_pct != null ? p.avg_quota_pct.toFixed(1) + '%' : '—' }}</div></div><span class="chip">{{ p.account_count || 0 }} 账号</span></div>
+          <div v-if="!platforms.length" class="empty-row">暂无平台数据</div>
+        </div></div>
       </div>
-
-      <div class="section-head">
-        <h2>最近请求</h2>
-        <router-link :to="'/gateway'" class="muted" style="font-size: 12px">查看网关 →</router-link>
+      <div class="card dashboard-section"><div class="card-head">最近请求 <router-link :to="'/gateway'" class="muted dashboard-link">查看网关 →</router-link></div>
+        <div v-if="logs.length" class="card-body tight"><div class="tbl-wrap"><table class="tbl"><thead><tr><th>时间</th><th>平台</th><th>模型</th><th>结果</th><th class="r">耗时</th></tr></thead><tbody><tr v-for="l in logs" :key="l.id"><td class="muted">{{ l.created_at }}</td><td>{{ l.platform_key }}</td><td>{{ l.model }}</td><td><span :class="l.ok ? 'badge ok' : 'badge err'">{{ l.ok ? '✓ 成功' : '✗ ' + (l.err ? short(l.err) : '失败') }}</span></td><td class="r num muted">{{ l.latency_ms }} ms</td></tr></tbody></table></div></div>
+        <div v-else-if="!loading" class="empty-state"><strong>暂无请求记录</strong><span>通过统一网关调用模型后，这里会显示请求流水</span></div>
       </div>
-      <div class="table-wrap" v-if="logs.length">
-        <table class="table">
-          <thead><tr><th>时间</th><th>平台</th><th>模型</th><th>结果</th><th>耗时</th></tr></thead>
-          <tbody>
-            <tr v-for="l in logs" :key="l.id">
-              <td class="muted">{{ l.created_at }}</td>
-              <td>{{ l.platform_key }}</td>
-              <td>{{ l.model }}</td>
-              <td><span :class="l.ok ? 'ok' : 'fail'">{{ l.ok ? '✓ 成功' : '✗ ' + (l.err ? short(l.err) : '失败') }}</span></td>
-              <td class="muted">{{ l.latency_ms }} ms</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div v-else-if="!loading" class="empty"><h3>暂无请求记录</h3><p>通过统一网关调用模型后，这里会显示请求流水</p></div>
     </div>
   </div>
 </template>
@@ -84,7 +41,7 @@ const loading = ref(false)
 const platforms = computed(() => data.value.platforms || [])
 const stats = computed(() => data.value.stats || {})
 const connectedPlatforms = computed(() => platforms.value.filter((p) => p.account_count).length)
-const enabledAccounts = computed(() => platforms.value.reduce((s, p) => s + p.account_count, 0))
+const enabledAccounts = computed(() => platforms.value.reduce((s, p) => s + (p.enabled_account_count || 0), 0))
 const pctActive = computed(() => {
   const t = stats.value.total_accounts
   return t ? Math.round((stats.value.active_accounts / t) * 100) : 0
@@ -121,3 +78,14 @@ async function load() {
 
 onMounted(load)
 </script>
+
+<style scoped>
+.dashboard-body { min-height: 240px; }
+.dashboard-section { margin-top: 12px; }
+.dashboard-head-note { margin-left: auto; font-weight: 400; }
+.dashboard-link { margin-left: auto; font-size: 12px; font-weight: 400; }
+.empty-row { padding: 18px 16px; color: var(--text-3); text-align: center; }
+.empty-state { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 34px 16px; color: var(--text-3); }
+.empty-state strong { color: var(--text-2); font-size: 13px; }
+@media (max-width: 767px) { .dashboard-head-note { width: 100%; margin-left: 0; } }
+</style>

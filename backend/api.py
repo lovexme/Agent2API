@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 import asyncio
 import json
+import logging
 import os
 import secrets
 import time
@@ -13,6 +14,7 @@ from . import db
 from .auth import require_admin
 from .platforms import ADAPTERS
 
+logger = logging.getLogger("aam.api")
 router = APIRouter(prefix="/api", dependencies=[Depends(require_admin)])
 
 class PlatformInput(BaseModel):
@@ -21,6 +23,7 @@ class PlatformInput(BaseModel):
     adapter: str
     base_url: str = ""
     proxy: str = ""
+    proxy_enabled: bool = True
     enabled: bool = True
     meta: dict = {}
 
@@ -33,12 +36,25 @@ class AccountInput(BaseModel):
 class AccountUpdate(BaseModel):
     name: str | None = None
     credential: str | None = None
+    credential_type: str | None = None
     enabled: bool | None = None
 
 class SettingsInput(BaseModel):
     panel_key: str | None = None
     gateway_key: str | None = None
     daily_auto_check: str | None = None
+    notify_webhook: str | None = None
+    proxy_test_url: str | None = None
+    tool_websearch_keys: str | None = None
+    tool_websearch_providers: str | None = None
+    tool_websearch_max_queries: str | None = None
+    tool_websearch_dedupe: str | None = None
+    tool_vision_provider: str | None = None
+    tool_vision_model: str | None = None
+    tool_vision_key: str | None = None
+    tool_vision_mode: str | None = None
+    tool_vision_endpoint: str | None = None
+    tool_vision_bridge_script: str | None = None
 
 class RefreshInput(BaseModel):
     pass
@@ -56,6 +72,9 @@ def invalidate_adapter(platform_id: int | None = None):
 
 
 def adapter_for(platform):
+    # proxy_enabled=0 时视为直连：地址保留但不用（沿用 Agent2API 的启用开关语义），适配器零改动
+    if not platform.get("proxy_enabled", 1):
+        platform = {**platform, "proxy": ""}
     cls = ADAPTERS.get(platform["adapter"])
     if not cls:
         raise HTTPException(400, f"unsupported adapter: {platform['adapter']}")
@@ -121,10 +140,8 @@ async def daily_tasks_data():
     accounts = []
     try:
         from pathlib import Path as _Path
-        data = {}
-        _env = os.environ.get("TRAE2API_DATA", "")
-        if _env:
-            data = json.loads(_Path(_env).read_text(encoding="utf-8"))
+        import os as _os
+        data = json.loads(_Path(_os.environ.get("TRAE2API_DATA", "/opt/trae2api/data/accounts.json")).read_text(encoding="utf-8"))
         for k, v in (data.get("accounts") or {}).items():
             accounts.append({"account_id": k, "label": str(v.get("label") or v.get("user_id") or k)})
     except Exception:
@@ -170,7 +187,7 @@ async def _daily_task_status(account_id: str, key: str):
 
 
 def _trae_relay_api_key():
-    env_path = os.environ.get("TRAE2API_ENV", "")
+    env_path = os.environ.get("TRAE2API_ENV", "/opt/trae2api/.env")
     try:
         with open(env_path, encoding="utf-8") as source:
             for line in source:
@@ -230,13 +247,19 @@ async def daily_tasks_checkin(account_id: str | None = None):
 
 
 @router.get("/overview")
-def overview():
+async def overview():
+    from .gateway import collect_models
     with db.connect() as conn:
-        platforms = [dict(row) for row in conn.execute("SELECT p.*,COUNT(a.id) account_count,COALESCE(SUM(a.status='active'),0) active_count,AVG(a.quota_pct) avg_quota_pct FROM platforms p LEFT JOIN accounts a ON a.platform_id=p.id GROUP BY p.id ORDER BY p.id")]
+        platforms = [dict(row) for row in conn.execute("SELECT p.*,COUNT(a.id) account_count,COALESCE(SUM(a.enabled=1),0) enabled_account_count,COALESCE(SUM(a.status='active'),0) active_count,AVG(a.quota_pct) avg_quota_pct FROM platforms p LEFT JOIN accounts a ON a.platform_id=p.id GROUP BY p.id ORDER BY p.id")]
         stats = conn.execute("SELECT COUNT(*) total_accounts,COALESCE(SUM(status='active'),0) active_accounts FROM accounts").fetchone()
         today = date.today().isoformat()
         req = conn.execute("SELECT COALESCE(SUM(created_at>=?),0) requests_today,COALESCE(SUM(created_at>=? AND ok=0),0) errors_today FROM request_log", (today,today)).fetchone()
         count = conn.execute("SELECT COUNT(*) FROM (SELECT DISTINCT p.key,m.value FROM platforms p JOIN accounts a ON a.platform_id=p.id AND a.enabled=1 AND a.status='active' JOIN json_each(a.quota_json,'$.models') m WHERE p.adapter='tabbit')").fetchone()[0]
+    try:
+        # 与 /v1/models 同口径统计(tabbit / loomy / openai_compat 全部已注册适配器)
+        count = len(await asyncio.wait_for(collect_models(), timeout=8))
+    except Exception as exc:
+        logger.warning("overview models_count fallback to quota_json: %s", type(exc).__name__)
     return {"ok":True,"platforms":platforms,"stats":{**dict(stats),**dict(req)},"gateway":{"base_url":"/v1","models_count":count}}
 
 @router.get("/platforms")
@@ -247,9 +270,11 @@ def list_platforms():
 
 @router.post("/platforms")
 def create_platform(body:PlatformInput):
+    if body.adapter not in ADAPTERS:
+        raise HTTPException(400, "unsupported adapter %s (可选: %s)" % (body.adapter, " / ".join(ADAPTERS)))
     try:
         with db.connect() as conn:
-            cur=conn.execute("INSERT INTO platforms(key,name,adapter,base_url,proxy,enabled,meta) VALUES(?,?,?,?,?,?,?)",(body.key,body.name,body.adapter,body.base_url,body.proxy,int(body.enabled),json.dumps(body.meta)))
+            cur=conn.execute("INSERT INTO platforms(key,name,adapter,base_url,proxy,proxy_enabled,enabled,meta) VALUES(?,?,?,?,?,?,?,?)",(body.key,body.name,body.adapter,body.base_url,body.proxy,int(body.proxy_enabled),int(body.enabled),json.dumps(body.meta)))
         invalidate_adapter()
         return {"ok":True,"item":db.get_platform(cur.lastrowid)}
     except Exception as exc:
@@ -257,7 +282,9 @@ def create_platform(body:PlatformInput):
 
 @router.put("/platforms/{platform_id}")
 def update_platform(platform_id:int,body:dict):
-    allowed={k:v for k,v in body.items() if k in {"key","name","adapter","base_url","proxy","enabled","meta"}}
+    allowed={k:v for k,v in body.items() if k in {"key","name","adapter","base_url","proxy","proxy_enabled","enabled","meta"}}
+    if allowed.get("adapter") not in (None, *ADAPTERS):
+        raise HTTPException(400, "unsupported adapter %s (可选: %s)" % (allowed["adapter"], " / ".join(ADAPTERS)))
     if "meta" in allowed: allowed["meta"]=json.dumps(allowed["meta"])
     if "enabled" in allowed: allowed["enabled"]=int(allowed["enabled"])
     with db.connect() as conn:
@@ -343,17 +370,57 @@ def logs(limit:int=Query(100,ge=1,le=1000)):
     with db.connect() as conn: rows=conn.execute("SELECT * FROM request_log ORDER BY id DESC LIMIT ?",(limit,)).fetchall()
     return {"ok":True,"items":[dict(r) for r in rows]}
 
+@router.post("/logs/clear")
+def clear_logs():
+    """清空请求日志(request_log);网关页面与总览统计随之归零。"""
+    with db.connect() as conn:
+        deleted = conn.execute("DELETE FROM request_log").rowcount
+    return {"ok": True, "deleted": deleted}
+
 @router.get("/settings")
 def settings():
-    return {"ok":True,"panel_key":db.get_setting("panel_key",""),"gateway_key":db.get_setting("gateway_key","aam-local-key"),
-            "daily_auto_check":db.get_setting("daily_auto_check","on")}
+    return {"ok":True,"panel_key":db.get_setting("panel_key",""),"gateway_key":db.get_setting("gateway_key",""),
+            "daily_auto_check":db.get_setting("daily_auto_check","on"),
+            "notify_webhook":db.get_setting("notify_webhook",""),
+            "auto_check_last_at":db.get_setting("auto_check_last_at",""),
+            "auto_check_next_at":db.get_setting("auto_check_next_at",""),
+            "auto_check_summary":db.get_setting("auto_check_summary",""),
+            "proxy_test_url":db.get_setting("proxy_test_url",""),
+            "tool_websearch_keys":db.get_setting("tool_websearch_keys","{}"),
+            "tool_websearch_providers":db.get_setting("tool_websearch_providers",""),
+            "tool_websearch_max_queries":db.get_setting("tool_websearch_max_queries","10"),
+            "tool_websearch_dedupe":db.get_setting("tool_websearch_dedupe","1"),
+            "tool_vision_provider":db.get_setting("tool_vision_provider",""),
+            "tool_vision_model":db.get_setting("tool_vision_model",""),
+            "tool_vision_key":db.get_setting("tool_vision_key",""),
+            "tool_vision_mode":db.get_setting("tool_vision_mode","http"),
+            "tool_vision_endpoint":db.get_setting("tool_vision_endpoint",""),
+            "tool_vision_bridge_script":db.get_setting("tool_vision_bridge_script","")}
 
 @router.post("/settings")
 def save_settings(body:SettingsInput):
     if body.panel_key is not None: db.set_setting("panel_key",body.panel_key)
     if body.gateway_key is not None: db.set_setting("gateway_key",body.gateway_key)
     if body.daily_auto_check is not None: db.set_setting("daily_auto_check",body.daily_auto_check)
+    if body.notify_webhook is not None: db.set_setting("notify_webhook",body.notify_webhook.strip())
+    if body.proxy_test_url is not None: db.set_setting("proxy_test_url",body.proxy_test_url.strip())
+    if body.tool_websearch_keys is not None: db.set_setting("tool_websearch_keys",body.tool_websearch_keys.strip())
+    if body.tool_websearch_providers is not None: db.set_setting("tool_websearch_providers",body.tool_websearch_providers.strip())
+    if body.tool_websearch_max_queries is not None: db.set_setting("tool_websearch_max_queries",body.tool_websearch_max_queries.strip())
+    if body.tool_websearch_dedupe is not None: db.set_setting("tool_websearch_dedupe",body.tool_websearch_dedupe.strip())
+    if body.tool_vision_provider is not None: db.set_setting("tool_vision_provider",body.tool_vision_provider.strip())
+    if body.tool_vision_model is not None: db.set_setting("tool_vision_model",body.tool_vision_model.strip())
+    if body.tool_vision_key is not None: db.set_setting("tool_vision_key",body.tool_vision_key.strip())
+    if body.tool_vision_mode is not None: db.set_setting("tool_vision_mode",body.tool_vision_mode.strip())
+    if body.tool_vision_endpoint is not None: db.set_setting("tool_vision_endpoint",body.tool_vision_endpoint.strip())
+    if body.tool_vision_bridge_script is not None: db.set_setting("tool_vision_bridge_script",body.tool_vision_bridge_script.strip())
     return settings()
+
+@router.post("/auto-check/run")
+async def run_auto_check_now():
+    """手动立即跑一轮全量账号检测(与每日 08:00 调度同一实现)。"""
+    from .scheduler import run_auto_check
+    return {"ok":True,**await run_auto_check(force=True)}
 
 # ---------------- API 密钥（令牌）管理 ----------------
 
@@ -375,7 +442,7 @@ def new_token_value():
 def list_tokens():
     with db.connect() as conn:
         rows = conn.execute("SELECT * FROM tokens ORDER BY id DESC").fetchall()
-    return {"ok": True, "items": [dict(r) for r in rows], "master_key": db.get_setting("gateway_key", "aam-local-key")}
+    return {"ok": True, "items": [dict(r) for r in rows], "master_key": db.get_setting("gateway_key", "")}
 
 @router.post("/tokens")
 def create_token(body: TokenInput):
@@ -419,3 +486,214 @@ def reset_token(token_id: int):
     if not row:
         raise HTTPException(404, "token not found")
     return {"ok": True, "item": dict(row)}
+
+# ---------------- 报表 ----------------
+
+from datetime import datetime as _dt
+
+def _report_start_end(days: int | None, hours: int | None, minutes: int | None,
+                      start: str | None, end: str | None):
+    """统一换算时间范围，返回 (start_str, end_str, bucket_expr, bucket_key)。
+    start/end 为 'YYYY-MM-DD' 或 'YYYY-MM-DD HH:MM' 字符串。end 缺省 = 现在。"""
+    if start or end:
+        def _norm(v: str, is_end: bool):
+            v = v.strip()
+            if not v:
+                return None
+            try:
+                return _dt.strptime(v, "%Y-%m-%d").strftime("%Y-%m-%d")
+            except ValueError:
+                pass
+            try:
+                return _dt.strptime(v, "%Y-%m-%d %H:%M").strftime("%Y-%m-%d %H:%M")
+            except ValueError:
+                raise HTTPException(400, f"时间格式应为 YYYY-MM-DD 或 YYYY-MM-DD HH:MM: {v}")
+        start_n, end_n = _norm(start, False), _norm(end, True)
+        # 桶粒度：起止都是日期则按天，含时间则按小时
+        hourly = (start_n and ":" in start_n) or (end_n and ":" in end_n)
+        bucket = "hour" if hourly else "date"
+        if bucket == "hour":
+            expr = "strftime('%Y-%m-%dT%H:00', created_at)"
+        else:
+            expr = "date(created_at)"
+        return start_n, end_n, expr, bucket
+    if minutes:
+        start_n = (_dt.now() - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M")
+        return start_n, None, "strftime('%Y-%m-%dT%H:00', created_at)", "hour"
+    if hours:
+        start_n = (_dt.now() - timedelta(hours=hours)).strftime("%Y-%m-%d %H:%M")
+        return start_n, None, "strftime('%Y-%m-%dT%H:00', created_at)", "hour"
+    if days:
+        start_n = (date.today() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+        return start_n, None, "date(created_at)", "date"
+    start_n = (date.today() - timedelta(days=6)).strftime("%Y-%m-%d")
+    return start_n, None, "date(created_at)", "date"
+
+
+@router.get("/report/summary")
+def report_summary(days: int | None = Query(None, ge=1, le=365),
+                   hours: int | None = Query(None, ge=1, le=24 * 30),
+                   minutes: int | None = Query(None, ge=1, le=60 * 24 * 30),
+                   start: str | None = None, end: str | None = None):
+    """报表单端点：一次返回概览 + 按天/小时趋势 + Top 提供·模型·账号。
+    时间参数 days / hours / minutes / from-to(start,end) 任选一种。"""
+    start_n, end_n, bucket_expr, bucket_kind = _report_start_end(days, hours, minutes, start, end)
+    cond, args = "WHERE created_at>=?", [start_n]
+    if end_n:
+        cond += " AND created_at<=?"
+        # end 含时间 → 补到分钟末;仅日期 → 到当天 23:59:59
+        args.append(end_n + ":59" if ":" in end_n else end_n + " 23:59:59")
+    with db.connect() as conn:
+        ov = conn.execute(f"SELECT COUNT(*) total, COALESCE(SUM(ok),0) ok_requests FROM request_log {cond}", args).fetchone()
+        days_rows = conn.execute(f"SELECT COUNT(DISTINCT date(created_at)) active_days FROM request_log {cond}", args).fetchone()
+        # 连续活跃天数：从今天（或 end 当天）往前连续有请求
+        streak = 0
+        cur_day = date.today()
+        if end_n:
+            try:
+                cur_day = _dt.strptime(end_n[:10], "%Y-%m-%d").date()
+            except ValueError:
+                cur_day = date.today()
+        seen = {r[0] for r in conn.execute(f"SELECT DISTINCT date(created_at) FROM request_log {cond}", args).fetchall()}
+        while cur_day.isoformat() in seen:
+            streak += 1
+            cur_day -= timedelta(days=1)
+        trend = [dict(r) for r in conn.execute(
+            f"SELECT {bucket_expr} bucket, SUM(ok) ok, SUM(ok=0) err FROM request_log {cond} GROUP BY bucket ORDER BY bucket", args).fetchall()]
+        top = lambda col: [dict(r) for r in conn.execute(
+            f"SELECT {col} key, COUNT(*) value FROM request_log {cond} GROUP BY {col} ORDER BY value DESC LIMIT 8", args).fetchall()]
+        providers = top("platform_key")
+        models = top("model")
+        accounts = top("account_id")
+    return {
+        "ok": True,
+        "range": {"kind": bucket_kind, "start": start_n, "end": end_n},
+        "overview": {
+            "total_requests": ov["total"],
+            "ok_requests": ov["ok_requests"],
+            "err_requests": ov["total"] - ov["ok_requests"],
+            "success_rate": round(ov["ok_requests"] / ov["total"], 4) if ov["total"] else 0,
+            "active_days": days_rows["active_days"],
+            "streak_days": streak,
+        },
+        "trend": trend,
+        "top": {"providers": providers, "models": models, "accounts": accounts},
+    }
+
+# ---------------- 工具服务 ----------------
+
+class ServiceInput(BaseModel):
+    name: str
+    url: str = ""
+    tools_json: list = []
+    enabled: bool = True
+    timeout_s: int = 60
+    internal_key: str = ""
+    skill_enabled: bool = False
+    mcp_enabled: bool = False
+    rest_enabled: bool = False
+    config_json: dict = {}
+
+@router.get("/services")
+def list_services():
+    with db.connect() as conn:
+        rows = conn.execute("SELECT * FROM tool_services ORDER BY id DESC").fetchall()
+    return {"ok": True, "items": [dict(r, tools_json=db.parse_json(r["tools_json"]),
+                                       config_json=db.parse_json(r["config_json"])) for r in rows]}
+
+@router.post("/services")
+def create_service(body: ServiceInput):
+    if not body.name.strip():
+        raise HTTPException(400, "请填写服务名称")
+    try:
+        with db.connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO tool_services(name,url,tools_json,enabled,timeout_s,internal_key,skill_enabled,mcp_enabled,rest_enabled,config_json) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (body.name.strip(), body.url.strip(), json.dumps(body.tools_json, ensure_ascii=False), int(body.enabled),
+                 body.timeout_s, body.internal_key.strip(), int(body.skill_enabled), int(body.mcp_enabled),
+                 int(body.rest_enabled), json.dumps(body.config_json, ensure_ascii=False)))
+            row = conn.execute("SELECT * FROM tool_services WHERE id=?", (cur.lastrowid,)).fetchone()
+        return {"ok": True, "item": dict(row, tools_json=db.parse_json(row["tools_json"]),
+                                         config_json=db.parse_json(row["config_json"]))}
+    except Exception as exc:
+        raise HTTPException(400, str(exc))
+
+@router.put("/services/{service_id}")
+def update_service(service_id: int, body: dict):
+    allowed = {k: v for k, v in body.items()
+               if k in {"name", "url", "tools_json", "enabled", "timeout_s", "internal_key",
+                        "skill_enabled", "mcp_enabled", "rest_enabled", "config_json"}}
+    if "enabled" in allowed: allowed["enabled"] = int(allowed["enabled"])
+    for k in ("skill_enabled", "mcp_enabled", "rest_enabled"):
+        if k in allowed: allowed[k] = int(allowed[k])
+    if "tools_json" in allowed: allowed["tools_json"] = json.dumps(allowed["tools_json"], ensure_ascii=False)
+    if "config_json" in allowed: allowed["config_json"] = json.dumps(allowed["config_json"], ensure_ascii=False)
+    allowed["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    with db.connect() as conn:
+        conn.execute("UPDATE tool_services SET " + ",".join(f"{k}=?" for k in allowed) + " WHERE id=?",
+                     (*allowed.values(), service_id))
+        row = conn.execute("SELECT * FROM tool_services WHERE id=?", (service_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "service not found")
+    return {"ok": True, "item": dict(row, tools_json=db.parse_json(row["tools_json"]),
+                                     config_json=db.parse_json(row["config_json"]))}
+
+@router.delete("/services/{service_id}")
+def delete_service(service_id: int):
+    with db.connect() as conn:
+        cur = conn.execute("DELETE FROM tool_services WHERE id=?", (service_id,))
+    if not cur.rowcount:
+        raise HTTPException(404, "service not found")
+    return {"ok": True}
+
+@router.post("/services/{service_id}/test")
+async def test_service(service_id: int):
+    """连通性测试：对服务地址发一个 GET 请求（服务地址必填 http(s)://）。"""
+    with db.connect() as conn:
+        row = conn.execute("SELECT * FROM tool_services WHERE id=?", (service_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "service not found")
+    url = (row["url"] or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return {"ok": True, "reachable": False, "status": "地址为空或非 http(s)://", "ms": 0}
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=min(max(row["timeout_s"] or 60, 5), 120)) as client:
+            r = await client.get(url, follow_redirects=True)
+        ms = int((time.monotonic() - started) * 1000)
+        return {"ok": True, "reachable": r.status_code < 500, "status": f"HTTP {r.status_code}", "ms": ms}
+    except httpx.HTTPError as exc:
+        ms = int((time.monotonic() - started) * 1000)
+        return {"ok": True, "reachable": False, "status": str(exc)[:160], "ms": ms}
+
+@router.post("/proxies/test")
+async def test_proxies(body: dict | None = None):
+    """批量连通性测试平台代理：body {platform_ids:[...]}，留空=测全部已启用且有代理的平台。
+    测试目标取 settings.proxy_test_url，留空默认面板网关自身(/v1/models)。"""
+    ids = (body or {}).get("platform_ids") or []
+    with db.connect() as conn:
+        if ids:
+            ph = ",".join("?" * len(ids))
+            rows = conn.execute(f"SELECT * FROM platforms WHERE id IN ({ph})", ids).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM platforms WHERE proxy!='' AND proxy_enabled=1").fetchall()
+    target = db.get_setting("proxy_test_url", "").strip()
+    if not target:
+        target = "http://127.0.0.1:8710/v1/models"
+    results = []
+    for p in rows:
+        proxy = (p["proxy"] or "").strip()
+        if not proxy:
+            results.append({"platform_id": p["id"], "ok": False, "msg": "未配置代理"})
+            continue
+        started = time.monotonic()
+        try:
+            async with httpx.AsyncClient(proxy=proxy, timeout=20, verify=False) as client:
+                r = await client.get(target)
+            ms = int((time.monotonic() - started) * 1000)
+            results.append({"platform_id": p["id"], "ok": r.status_code < 500,
+                            "ip": r.headers.get("x-proxied-ip", ""), "msg": f"HTTP {r.status_code}", "ms": ms})
+        except httpx.HTTPError as exc:
+            ms = int((time.monotonic() - started) * 1000)
+            results.append({"platform_id": p["id"], "ok": False, "msg": str(exc)[:160], "ms": ms})
+    return {"ok": True, "items": results}

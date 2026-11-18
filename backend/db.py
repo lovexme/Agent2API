@@ -1,4 +1,5 @@
 import json
+import secrets
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -8,7 +9,8 @@ from .config import DATA_DIR, DB_PATH
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS platforms (
  id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
- adapter TEXT NOT NULL, base_url TEXT NOT NULL, proxy TEXT DEFAULT '', enabled INTEGER DEFAULT 1,
+ adapter TEXT NOT NULL, base_url TEXT NOT NULL, proxy TEXT DEFAULT '', proxy_enabled INTEGER DEFAULT 1,
+ enabled INTEGER DEFAULT 1,
  builtin INTEGER DEFAULT 0, meta TEXT DEFAULT '{}', created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 CREATE TABLE IF NOT EXISTS accounts (
@@ -29,16 +31,47 @@ CREATE TABLE IF NOT EXISTS rate_limit (
  PRIMARY KEY(scope, rkey)
 );
 CREATE TABLE IF NOT EXISTS tokens (
- id INTEGER PRIMARY KEY AUTOINCREMENT,
- name TEXT NOT NULL,
- token TEXT UNIQUE NOT NULL,
- platform_key TEXT DEFAULT '',
- enabled INTEGER DEFAULT 1,
- note TEXT DEFAULT '',
- created_at TEXT DEFAULT (datetime('now','localtime')),
- last_used_at TEXT,
- request_count INTEGER DEFAULT 0
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    token TEXT UNIQUE NOT NULL,
+    platform_key TEXT DEFAULT '',
+    enabled INTEGER DEFAULT 1,
+    note TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    last_used_at TEXT,
+    request_count INTEGER DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS tool_services (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    url TEXT DEFAULT '',
+    tools_json TEXT DEFAULT '[]',
+    enabled INTEGER DEFAULT 1,
+    timeout_s INTEGER DEFAULT 60,
+    internal_key TEXT DEFAULT '',
+    skill_enabled INTEGER DEFAULT 0,
+    mcp_enabled INTEGER DEFAULT 0,
+    rest_enabled INTEGER DEFAULT 0,
+    config_json TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS assistant_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT DEFAULT '未命名对话',
+    model TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE TABLE IF NOT EXISTS assistant_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL REFERENCES assistant_sessions(id) ON DELETE CASCADE,
+    role TEXT NOT NULL,
+    content TEXT DEFAULT '',
+    tool_json TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+CREATE INDEX IF NOT EXISTS idx_assist_msg_session ON assistant_messages(session_id);
 """
 
 @contextmanager
@@ -68,7 +101,23 @@ def init_db():
         db.executemany("INSERT OR IGNORE INTO platforms(key,name,adapter,base_url,proxy,enabled,builtin,meta) VALUES(?,?,?,?,?,?,?,?)", seeds)
         # 老库迁移：trae/workbuddy 平台改用 openai_compat 适配器
         db.execute("UPDATE platforms SET adapter='openai_compat' WHERE key IN ('trae','workbuddy') AND adapter IN ('trae','workbuddy')")
-        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('gateway_key','aam-local-key')")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('gateway_key',?)",(secrets.token_urlsafe(32),))
+        # 老库迁移：proxy_enabled 列（幂等，CREATE TABLE IF NOT EXISTS 不会改动既有表）
+        cols = {r[1] for r in db.execute("PRAGMA table_info(platforms)").fetchall()}
+        if "proxy_enabled" not in cols:
+            db.execute("ALTER TABLE platforms ADD COLUMN proxy_enabled INTEGER DEFAULT 1")
+        # 测试缓存与工具能力配置的默认键
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('proxy_test_url','')")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tool_websearch_keys','{}')")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tool_websearch_providers','')")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tool_websearch_max_queries','10')")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tool_websearch_dedupe','1')")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tool_vision_provider','')")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tool_vision_model','')")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tool_vision_key','')")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tool_vision_mode','http')")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tool_vision_endpoint','')")
+        db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('tool_vision_bridge_script','')")
 
 def rowdict(row):
     return dict(row) if row else None
@@ -117,6 +166,19 @@ def bump_account_usage(account_id):
     with connect() as db:
         db.execute("UPDATE accounts SET request_count=request_count+1, last_used_at=? WHERE id=?",
                    (time.strftime("%Y-%m-%d %H:%M:%S"), account_id))
+
+def rate_window_incr(scope, rkey, window_secs, limit):
+    """固定窗口计数限流（跨进程，SQLite BEGIN IMMEDIATE 原子）。返回 (allowed, count)。"""
+    now = time.time()
+    start = int(now // window_secs) * window_secs
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute("CREATE TABLE IF NOT EXISTS rate_window(scope TEXT NOT NULL, rkey TEXT NOT NULL, window_start INTEGER NOT NULL, count INTEGER NOT NULL, PRIMARY KEY(scope,rkey,window_start))")
+        db.execute("INSERT INTO rate_window(scope,rkey,window_start,count) VALUES(?,?,?,1) ON CONFLICT(scope,rkey,window_start) DO UPDATE SET count=count+1", (scope, rkey, start))
+        row = db.execute("SELECT count FROM rate_window WHERE scope=? AND rkey=? AND window_start=?", (scope, rkey, start)).fetchone()
+        db.execute("DELETE FROM rate_window WHERE window_start < ?", (start - window_secs * 2,))
+        return (bool(row) and row["count"] <= limit), (row["count"] if row else 0)
+
 
 def rate_limit(scope, rkey, min_interval):
     """分布式（双进程 SQLite）限频：距上次放行不足 min_interval 秒返回 False。"""

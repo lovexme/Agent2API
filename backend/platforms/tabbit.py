@@ -105,6 +105,10 @@ class TabbitAdapter(PlatformAdapter):
             elif line.startswith("data:"):
                 try: payload=json.loads(line[5:].strip())
                 except json.JSONDecodeError: continue
+                if event_name=="error" or (isinstance(payload,dict) and payload.get("type")=="error"):
+                    data=payload.get("data") if isinstance(payload,dict) else None
+                    code=(data.get("code") if isinstance(data,dict) else None) or (payload.get("code") if isinstance(payload,dict) else None)
+                    raise RuntimeError("Tabbit upstream error: code=%s" % code)
                 if event_name=="message_chunk": chunks.append(payload.get("content",""))
                 elif payload.get("type")=="message_chunk": chunks.append((payload.get("data") or {}).get("content",""))
                 event_name=""

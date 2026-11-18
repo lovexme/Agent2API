@@ -1,245 +1,49 @@
 <template>
-  <div>
-    <div class="heading">
-      <div>
-        <div class="eyebrow">账号池</div>
-        <h1>账号管理</h1>
-        <div class="sub">各平台账号、积分与可用状态一览</div>
+  <section class="accounts-view">
+    <header class="page-head">
+      <div><div class="page-title">账号池</div><div class="page-desc">多平台账号统一管理 · 状态、积分与凭据一览</div></div>
+      <div class="head-actions">
+        <button class="btn" @click="openTraeLogin">Trae 浏览器登录</button><button class="btn" @click="openWorkbuddyLogin">WorkBuddy 授权</button><button class="btn" @click="openSmsLogin">手机验证码添加</button><button class="btn" @click="openDailyTasks">每日任务</button><button class="btn primary" @click="openCreate">＋ 新增账号</button>
       </div>
-      <div style="display:flex; gap:8px; align-items:center">
-        <button class="btn secondary" @click="openTraeLogin">🖥 Trae 浏览器登录</button>
-        <button class="btn secondary" @click="openWorkbuddyLogin">🔑 WorkBuddy 授权</button>
-        <button class="btn secondary" @click="openSmsLogin">📱 手机验证码添加</button>
-        <button class="btn secondary" @click="openDailyTasks">📅 每日任务</button>
-        <button class="btn" @click="openCreate">＋ 新增账号</button>
+    </header>
+    <div class="card">
+      <div class="filters">
+        <div class="seg platform-seg"><button :class="{ on: !platformFilter }" @click="platformFilter = ''; reload()">全部平台</button><button v-for="p in platforms" :key="p.id" :class="{ on: String(platformFilter) === String(p.id) }" @click="platformFilter = p.id; reload()">{{ p.name }}</button></div>
+        <div class="seg status-seg"><button :class="{ on: !statusFilter }" @click="statusFilter = ''; reload()">全部状态</button><button v-for="s in [{id:'active',name:'有效'},{id:'expired',name:'过期'},{id:'error',name:'异常'},{id:'unknown',name:'未检查'},{id:'disabled',name:'已禁用'}]" :key="s.id" :class="{ on: statusFilter === s.id }" @click="statusFilter = s.id; reload()">{{ s.name }}</button></div>
+        <div class="search"><input class="input" v-model="q" placeholder="搜索账号名 / 平台 / 用户 ID" @input="reload" /></div><button class="btn ghost sm" @click="resetFilters">重置筛选</button>
       </div>
+      <div v-if="selected.length" class="batch-bar"><span>已选 <strong>{{ selected.length }}</strong> / {{ items.length }} 个账号</span><button class="btn sm" type="button" :disabled="batchBusy" @click="batchCheck">{{ batchBusy ? '处理中...' : '批量检测' }}</button><button class="btn sm danger" type="button" :disabled="batchBusy" @click="batchDelete">批量删除</button><button class="btn ghost sm" type="button" @click="selected = []">取消选择</button></div>
+      <div v-loading="loading" class="tbl-wrap"><table class="tbl"><thead><tr><th class="c"><input type="checkbox" aria-label="选择全部账号" :checked="allSelected" :indeterminate.prop="someSelected" @change="toggleAll" /></th><th>账号</th><th>平台</th><th>状态</th><th>等级</th><th>积分进度</th><th>到期</th><th class="r">请求数</th><th>操作</th></tr></thead><tbody>
+        <tr v-for="a in items" :key="a.id">
+          <td class="c"><input type="checkbox" :value="a.id" v-model="selected" :aria-label="`选择 ${a.name}`" /></td>
+          <td><div class="acct-cell"><span class="avatar" :class="logoClass(a.platform_key)">{{ logoText(a.platform_key) }}</span><div class="acct-copy"><div class="acct-name" :title="a.name">{{ a.name }}</div><div class="acct-meta">{{ a.platform_name }}{{ a.user_info && a.user_info.secret_mobile ? ` · ${a.user_info.secret_mobile}` : '' }}{{ a.user_info ? ` · ${shortId(a)}` : '' }}</div></div></div></td>
+          <td><span class="chip" :class="a.platform_key === 'tabbit-intl' ? 'intl' : 'cn'">{{ a.platform_name }}</span></td>
+          <td><span class="badge" :class="a.status === 'active' ? 'ok' : ['expired','error'].includes(a.status) ? 'err' : a.status === 'unknown' ? 'dim' : 'warn'"><span class="dot"></span>{{ statusText(a) }}</span></td>
+          <td><span v-if="a.member_level" class="badge blue">{{ a.member_level.toUpperCase() }}</span><span v-else class="muted">—</span></td>
+          <td class="quota-cell"><div class="quota-line"><span>{{ quotaText(a) }}</span><span v-if="sessionDays(a) !== null" class="acct-meta">剩 {{ sessionDays(a) }} 天</span></div><div class="bar" :class="barClass(a)"><i :style="barStyle(a)"></i></div><div class="acct-meta">{{ resetText(a) }}</div></td>
+          <td><span class="acct-meta">{{ sessionDays(a) !== null ? `${sessionDays(a)} 天` : '—' }}</span></td><td class="r num">{{ a.request_count ?? a.requests ?? '—' }}</td>
+          <td><div class="row-actions"><button class="btn ghost sm" :disabled="busy===a.id" @click="doCheck(a)">检测</button><button class="btn ghost sm" @click="showModels(a)">模型</button><button class="btn ghost sm" @click="openEdit(a)">编辑</button><button class="btn ghost sm danger" @click="doDelete(a)">删除</button></div></td>
+        </tr>
+        <tr v-if="!items.length && !loading"><td colspan="9"><div class="empty"><strong>还没有账号</strong><span>新增账号并填写凭据后，即可在此查看状态与额度。</span><button class="btn primary" @click="openCreate">＋ 新增账号</button></div></td></tr>
+      </tbody></table></div>
+      <div class="table-foot"><span>共 {{ items.length }} 个账号</span><div class="pager"><button class="on">1</button></div></div>
     </div>
-
-    <div class="filterbar">
-      <input class="search" v-model="q" placeholder="搜索备注名 / 平台 / 用户 ID" @input="reload" />
-      <select v-model="platformFilter" @change="reload">
-        <option value="">全部平台</option>
-        <option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}</option>
-      </select>
-      <select v-model="statusFilter" @change="reload">
-        <option value="">全部状态</option>
-        <option value="active">有效</option>
-        <option value="expired">已过期</option>
-        <option value="error">异常</option>
-        <option value="unknown">未检查</option>
-        <option value="disabled">已禁用</option>
-      </select>
-      <button class="btn secondary sm" @click="resetFilters">重置筛选</button>
-    </div>
-
-    <div v-loading="loading" style="min-height: 200px">
-      <div v-if="items.length" class="account-grid">
-        <article v-for="a in items" :key="a.id" class="acct">
-          <div class="acct-top">
-            <div class="acct-identity">
-              <span class="logo" :class="logoClass(a.platform_key)">{{ logoText(a.platform_key) }}</span>
-              <div style="min-width: 0">
-                <h3 class="acct-name" :title="a.name">{{ a.name }}</h3>
-                <div class="account-meta">{{ a.platform_name }}<template v-if="a.user_info && a.user_info.secret_mobile"> · {{ a.user_info.secret_mobile }}</template></div>
-              </div>
-            </div>
-            <span v-if="a.member_level" class="level">{{ a.member_level.toUpperCase() }}</span>
-            <span v-if="sessionDays(a) !== null" class="session-left" :class="sessionLeftClass(a)">session 剩 {{ sessionDays(a) }} 天</span>
-          </div>
-
-          <div style="margin-top: 12px; display: flex; justify-content: space-between; align-items: center">
-            <span class="state" :class="statusClass(a)">{{ statusText(a) }}</span>
-            <span v-if="a.user_info" class="muted" style="font-size: 11px; color: var(--soft)">{{ shortId(a) }}</span>
-          </div>
-
-          <div class="quota">
-            <div class="quota-line">
-              <span>积分用量</span>
-              <strong>{{ quotaText(a) }}</strong>
-            </div>
-            <div class="bar"><i :class="barClass(a)" :style="barStyle(a)"></i></div>
-            <div class="reset">{{ resetText(a) }}</div>
-          </div>
-
-          <div class="acct-foot">
-            <span class="muted">上次检查 {{ a.check_at || '从未' }}</span>
-            <span class="actions">
-              <button class="iconbtn" :disabled="busy===a.id" @click="doCheck(a)">↻ 检测</button>
-              <button class="iconbtn" :disabled="busy===a.id" @click="showModels(a)">模型</button>
-              <button class="iconbtn" @click="openEdit(a)">编辑</button>
-              <button class="iconbtn" style="color: var(--red)" @click="doDelete(a)">删除</button>
-            </span>
-          </div>
-        </article>
-      </div>
-      <div v-else class="empty">
-        <h3>还没有账号</h3>
-        <p>点击右上角「新增账号」，选择平台并粘贴 Cookie 即可接入</p>
-        <button class="btn" @click="openCreate">＋ 新增账号</button>
-      </div>
-    </div>
-
-    <!-- 新增/编辑 -->
-    <el-dialog v-model="dialog.show" :title="dialog.mode === 'create' ? '新增账号' : '编辑账号'" width="520px">
-      <div class="formgrid single">
-        <div class="field">
-          <label>所属平台</label>
-          <select v-model="dialog.platform_id" :disabled="dialog.mode === 'edit'">
-            <option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}（{{ p.key }}）</option>
-          </select>
-        </div>
-        <div class="field">
-          <label>备注名</label>
-          <input v-model="dialog.name" placeholder="如：国内主号" />
-        </div>
-        <div class="field credential-field">
-          <label>凭据输入方式</label>
-          <div class="credential-tabs" role="tablist" aria-label="凭据输入方式">
-            <button v-for="mode in credentialModes" :key="mode.id" type="button" role="tab" :aria-selected="dialog.credentialMode === mode.id" :class="{ active: dialog.credentialMode === mode.id }" @click="dialog.credentialMode = mode.id">{{ mode.label }}</button>
-          </div>
-          <template v-if="dialog.credentialMode === 'cookie'">
-            <textarea v-model="dialog.credential" rows="6" :placeholder="credentialPlaceholder"></textarea>
-            <span class="hint">{{ credentialHint }}</span>
-          </template>
-          <template v-else-if="dialog.credentialMode === 'token'">
-            <input v-model="dialog.credential" type="password" autocomplete="off" placeholder="粘贴平台的 Access Token / API Key / Session Token" />
-            <span class="hint">{{ credentialHint }}</span>
-          </template>
-          <template v-else-if="dialog.credentialMode === 'json'">
-            <textarea v-model="dialog.credential" rows="6" placeholder='粘贴完整 JSON（如 {"cookie":"...","jwt":"..."}）'></textarea>
-            <span class="hint">{{ credentialHint }}</span>
-          </template>
-          <div v-else class="browser-guide">
-            <strong>在浏览器中登录 {{ currentPlatform?.name || '所选平台' }}</strong>
-            <p>登录完成后，从平台提供的会话信息中复制 Cookie 或 Token，再切换到对应输入方式粘贴并保存。</p>
-            <span class="hint">{{ credentialHint }}</span>
-          </div>
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn secondary" @click="dialog.show = false">取消</button>
-        <button class="btn" :disabled="saving" @click="save">{{ saving ? '保存并检测中…' : '保存并自动检测' }}</button>
-      </div>
-    </el-dialog>
-
-    <!-- 模型列表 -->
-    <el-dialog v-model="models.show" :title="`可用模型 — ${models.name || ''}`" width="560px">
-      <div v-if="models.items.length === 0" class="empty"><h3>暂无模型数据</h3><p>点击「重新加载」获取该账号的模型列表</p></div>
-      <div v-else class="model-list">
-        <span v-for="m in models.items" :key="m" class="model">{{ m }}</span>
-      </div>
-      <div class="form-actions">
-        <button class="btn secondary" @click="models.show = false">关闭</button>
-        <button class="btn" :disabled="models.loading" @click="reloadModels">{{ models.loading ? '加载中…' : '重新加载' }}</button>
-      </div>
-    </el-dialog>
-
-    <!-- 每日任务 -->
-    <el-dialog v-model="dailyTasks.show" title="📅 每日任务" width="620px">
-      <div class="daily-task-tip">Trae 签到：状态来自 Trae 账号列表；点击单个「签到」或「全部签到」执行。</div>
-      <div v-if="dailyTasks.loading" class="muted" style="padding:18px 0">正在加载 Trae 账号…</div>
-      <div v-else-if="!dailyTasks.items.length" class="empty daily-task-empty"><h3>暂无 Trae 账号</h3><p>Trae 网关账号列表为空</p></div>
-      <div v-else class="daily-task-list">
-        <div v-for="task in dailyTasks.items" :key="task.account_id" class="daily-task-row">
-          <div class="daily-task-account">
-            <strong>{{ task.label || task.account_id }}</strong>
-            <span class="muted">{{ task.user_id || task.account_id }}</span>
-          </div>
-          <span class="daily-task-status" :class="task.ok === true ? 'is-ok' : task.ok === false ? 'is-fail' : ''">{{ task.message || '待签到' }}</span>
-          <button class="btn secondary sm" :disabled="dailyTasks.busy" @click="checkinTask(task)">{{ dailyTasks.busyId === task.account_id ? '签到中…' : '签到' }}</button>
-        </div>
-      </div>
-      <div class="form-actions">
-        <button class="btn secondary" :disabled="dailyTasks.loading || dailyTasks.busy" @click="loadDailyTasks">刷新状态</button>
-        <button class="btn secondary" @click="dailyTasks.show = false">关闭</button>
-        <button class="btn" :disabled="dailyTasks.loading || dailyTasks.busy || !dailyTasks.items.length" @click="checkinAllTasks">{{ dailyTasks.busy ? '签到中…' : '全部签到' }}</button>
-      </div>
-    </el-dialog>
-
-    <!-- Trae 账号授权（OAuth 半自动，借鉴 GitHub 方式） -->
-    <el-dialog v-model="traeLogin.show" title="Trae 账号授权（OAuth 半自动，跟 GitHub 一样）" width="720px" :close-on-click-modal="false" custom-class="trae-login-dialog" @closed="closeTraeLogin">
-      <div class="trae-login-tip">
-        <span :class="traeLogin.boxUp ? 'ok' : 'err'">{{ traeLogin.boxUp ? '● 服务就绪' : '● 沙箱未启动（不影响授权）' }}</span>
-        <span class="muted">· 已保存 Trae 账号：{{ traeLogin.count }}</span>
-        <span v-if="traeLogin.savedFlash" class="ok">✅ 检测到新账号，已自动刷新列表</span>
-      </div>
-
-      <ol class="oauth-steps">
-        <li>
-          <b>下载并运行「授权助手」</b>（在你自己的电脑上跑，负责本地回调）：
-          <a :href="helperLink('bat')" download>Windows .bat</a> ·
-          <a :href="helperLink('sh')" download>Mac/Linux .sh</a> ·
-          <a :href="helperLink('py')" download>通用 .py</a>
-        </li>
-        <li>双击运行助手（会提示监听 127.0.0.1:8765，保持窗口开着）</li>
-        <li>
-          <b>点下方「打开授权页」</b>，在弹出的 Trae 授权页用手机号登录（滑滑块 + 填验证码）
-        </li>
-        <li>授权完成 → 助手自动把凭据推送到服务器 → <b>本页账号数自动 +1</b>，无需复制任何东西</li>
-      </ol>
-
-      <div class="form-actions">
-        <button class="btn" @click="openAuthPage">🔗 打开授权页</button>
-        <span style="flex:1"></span>
-        <button class="btn secondary" @click="resetSandbox">↻ 重置沙箱</button>
-        <button class="btn secondary" @click="traeLogin.show = false">关闭</button>
-      </div>
-
-      <el-collapse style="margin-top:12px">
-        <el-collapse-item title="备选：沙箱实时画面（无需本机助手，直接在画布里操作）" name="sandbox">
-          <div class="trae-login-wrap" style="height:52vh">
-            <iframe v-if="traeLogin.show" :src="traeLogin.url" class="trae-login-frame" allow="clipboard-read; clipboard-write"></iframe>
-          </div>
-        </el-collapse-item>
-      </el-collapse>
-    </el-dialog>
-
-    <!-- WorkBuddy OAuth 授权 -->
-    <el-dialog v-model="workbuddy.show" title="WorkBuddy 账号授权" width="620px" :close-on-click-modal="false" @closed="stopWorkbuddyPolling">
-      <div class="form-field">
-        <label>授权地址</label>
-        <a v-if="workbuddy.url" :href="workbuddy.url" target="_blank" rel="noopener noreferrer" class="workbuddy-auth-link">{{ workbuddy.url }}</a>
-        <div v-else class="muted">正在生成授权地址…</div>
-        <button v-if="workbuddy.url" class="btn secondary sm" style="margin-top:8px" @click="copyWorkbuddyUrl">复制授权地址</button>
-      </div>
-      <p class="muted">{{ workbuddy.message || '请打开授权地址并完成登录，本页面会自动检测授权结果。' }}</p>
-      <div class="form-actions"><button class="btn secondary" @click="workbuddy.show = false">关闭</button></div>
-    </el-dialog>
-
-    <!-- 手机验证码添加（发短信建号） -->
-    <el-dialog v-model="sms.show" title="📱 手机验证码添加账号" width="460px" :close-on-click-modal="false">
-      <div class="form-field">
-        <label>平台</label>
-        <select v-model="sms.platform_id">
-          <option v-for="p in smsPlatforms" :key="p.id" :value="p.id">{{ p.name }}（{{ p.key }}）</option>
-        </select>
-      </div>
-      <div class="form-field">
-        <label>手机号</label>
-        <input v-model="sms.phone" placeholder="输入接收验证码的手机号，如 13800138000" />
-      </div>
-      <div class="form-field" style="display:flex; gap:8px; align-items:center">
-        <input v-model="sms.code" placeholder="短信验证码" style="flex:1" />
-        <button class="btn secondary sm" :disabled="sms.sending" @click="smsSend">
-          {{ sms.timer > 0 ? `${sms.timer}s 后可重发` : (sms.sending ? '发送中…' : '发送验证码') }}
-        </button>
-      </div>
-      <p v-if="sms.msg" class="muted sms-msg">{{ sms.msg }}</p>
-      <div class="form-actions">
-        <button class="btn secondary" @click="sms.show = false">取消</button>
-        <button class="btn" :disabled="sms.verifying" @click="smsVerify">
-          {{ sms.verifying ? '验证并添加中…' : '✅ 验证并添加' }}
-        </button>
-      </div>
-    </el-dialog>
-  </div>
+    <div v-if="dialog.show || models.show || dailyTasks.show || traeLogin.show || workbuddy.show || sms.show" class="mask open" @click.self="dialog.show = false; models.show = false; dailyTasks.show = false; workbuddy.show = false; traeLogin.show = false; sms.show = false; closeTraeLogin(); stopWorkbuddyPolling()"></div>
+    <section v-if="dialog.show" class="modal open" role="dialog" aria-modal="true"><header class="modal-head">{{ dialog.mode === 'create' ? '新增账号' : '编辑账号' }}</header><div class="modal-body"><div class="tabs"><button type="button" :class="{ on: dialog.tab !== 'help' }" @click="dialog.tab = 'cred'">账号凭据</button><button type="button" :class="{ on: dialog.tab === 'help' }" @click="dialog.tab = 'help'">凭据说明</button></div><template v-if="dialog.tab !== 'help'"><div class="field"><label>所属平台</label><select class="select" v-model="dialog.platform_id" :disabled="dialog.mode === 'edit'"><option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}（{{ p.key }}）</option></select></div><div class="field"><label>备注名</label><input class="input" v-model="dialog.name" placeholder="如：国内主号" /></div><div class="field"><label>凭据输入方式</label><div class="seg credential-tabs"><button v-for="mode in credentialModesFor" :key="mode.id" type="button" :class="{ on: dialog.credentialMode === mode.id }" @click="dialog.credentialMode = mode.id">{{ mode.label }}</button></div><div class="hint" style="margin-top:-2px">已按当前平台自动限定可用方式</div></div><div class="field credential-field"><label>凭据内容</label><textarea v-if="dialog.credentialMode === 'cookie' || dialog.credentialMode === 'json'" class="input textarea" v-model="dialog.credential" rows="5" :placeholder="dialog.credentialMode === 'json' ? '粘贴完整 JSON 凭据' : credentialPlaceholder"></textarea><input v-else-if="dialog.credentialMode === 'token'" class="input" v-model="dialog.credential" type="password" autocomplete="off" placeholder="粘贴 Access Token / API Key / Session Token" /><div v-else class="browser-guide"><strong>浏览器登录引导</strong><p>登录完成后复制会话凭据，并切换到 Cookie 或 Token 方式提交。</p></div><span class="hint">{{ credentialHint }}</span></div></template><div v-else class="cred-help"><strong>{{ credHelp.title }}</strong><ol><li v-for="(step, i) in credHelp.steps" :key="i">{{ step }}</li></ol><p class="hint">{{ credHelp.hint }}</p><p class="hint">提交后面板会立即对账号做一次真实检测,状态与积分以检测结果为准。</p></div></div><footer class="modal-foot"><button class="btn" @click="dialog.show = false">取消</button><button class="btn primary" :disabled="saving" @click="save">{{ saving ? '保存并检测中…' : '保存并自动检测' }}</button></footer></section>
+    <section v-if="models.show" class="modal open" role="dialog" aria-modal="true"><header class="modal-head">可用模型 · {{ models.name }}</header><div class="modal-body"><div v-if="!models.items.length" class="empty"><strong>暂无模型数据</strong><span>重新加载该账号的模型列表。</span></div><div v-else class="model-list"><span v-for="m in models.items" :key="m" class="chip">{{ m }}</span></div></div><footer class="modal-foot"><button class="btn" @click="models.show = false">关闭</button><button class="btn primary" :disabled="models.loading" @click="reloadModels">{{ models.loading ? '加载中…' : '重新加载' }}</button></footer></section>
+    <section v-if="dailyTasks.show" class="modal open wide" role="dialog" aria-modal="true"><header class="modal-head">每日任务</header><div class="modal-body"><p class="task-tip">Trae 签到状态来自账号列表，可单个执行或全部签到。</p><div v-if="dailyTasks.loading" class="muted">正在加载 Trae 账号…</div><div v-else-if="!dailyTasks.items.length" class="empty"><strong>暂无 Trae 账号</strong><span>Trae 网关账号列表为空。</span></div><div v-else class="daily-task-list"><div v-for="task in dailyTasks.items" :key="task.account_id" class="daily-task-row"><div class="task-account"><strong>{{ task.label || task.account_id }}</strong><span class="acct-meta">{{ task.user_id || task.account_id }}</span></div><span class="badge" :class="task.ok === true ? 'ok' : task.ok === false ? 'err' : 'dim'">{{ task.message || '待签到' }}</span><button class="btn sm" :disabled="dailyTasks.busy" @click="checkinTask(task)">{{ dailyTasks.busyId === task.account_id ? '签到中…' : '签到' }}</button></div></div></div><footer class="modal-foot"><button class="btn" :disabled="dailyTasks.loading || dailyTasks.busy" @click="loadDailyTasks">刷新状态</button><button class="btn" @click="dailyTasks.show = false">关闭</button><button class="btn primary" :disabled="dailyTasks.loading || dailyTasks.busy || !dailyTasks.items.length" @click="checkinAllTasks">{{ dailyTasks.busy ? '签到中…' : '全部签到' }}</button></footer></section>
+    <section v-if="traeLogin.show" class="modal open wide" role="dialog" aria-modal="true"><header class="modal-head">Trae 账号授权 <span class="badge" :class="traeLogin.boxUp ? 'ok' : 'warn'">{{ traeLogin.boxUp ? '服务就绪' : '沙箱未启动' }}</span><span class="spacer"></span><span class="acct-meta">已保存 {{ traeLogin.count }} 个账号</span></header><div class="modal-body"><p class="task-tip">下载并运行本机授权助手，再打开 Trae 授权页完成登录；凭据会自动推送至服务器。</p><ol class="oauth-steps"><li>下载授权助手：<a :href="helperLink('bat')" download>Windows .bat</a> · <a :href="helperLink('sh')" download>Mac/Linux .sh</a> · <a :href="helperLink('py')" download>通用 .py</a></li><li>运行助手并保持窗口开启。</li><li>打开授权页登录，完成后账号池会自动刷新。</li></ol><details><summary>备选：沙箱实时画面</summary><div class="trae-login-wrap"><iframe v-if="traeLogin.show" :src="traeLogin.url" class="trae-login-frame" allow="clipboard-read; clipboard-write"></iframe></div></details></div><footer class="modal-foot"><button class="btn" @click="resetSandbox">重置沙箱</button><button class="btn" @click="openAuthPage">打开授权页</button><button class="btn primary" @click="traeLogin.show = false; closeTraeLogin()">关闭</button></footer></section>
+    <section v-if="workbuddy.show" class="modal open" role="dialog" aria-modal="true"><header class="modal-head">WorkBuddy 账号授权</header><div class="modal-body"><div class="field"><label>授权地址</label><a v-if="workbuddy.url" class="auth-link" :href="workbuddy.url" target="_blank" rel="noopener noreferrer">{{ workbuddy.url }}</a><span v-else class="muted">正在生成授权地址…</span><button v-if="workbuddy.url" class="btn sm" @click="copyWorkbuddyUrl">复制授权地址</button></div><p class="muted">{{ workbuddy.message || '请打开授权地址完成登录，本页面会自动检测。' }}</p></div><footer class="modal-foot"><button class="btn primary" @click="workbuddy.show = false; stopWorkbuddyPolling()">关闭</button></footer></section>
+    <section v-if="sms.show" class="modal open" role="dialog" aria-modal="true"><header class="modal-head">手机验证码添加账号</header><div class="modal-body"><div class="field"><label>平台</label><select class="select" v-model="sms.platform_id"><option v-for="p in smsPlatforms" :key="p.id" :value="p.id">{{ p.name }}（{{ p.key }}）</option></select></div><div class="field"><label>手机号</label><input class="input" v-model="sms.phone" placeholder="输入接收验证码的手机号" /></div><div class="field"><label>短信验证码</label><div class="sms-code"><input class="input" v-model="sms.code" placeholder="输入验证码" /><button class="btn" :disabled="sms.sending || sms.timer > 0" @click="smsSend">{{ sms.timer > 0 ? `${sms.timer}s 后可重发` : (sms.sending ? '发送中…' : '发送验证码') }}</button></div></div><p v-if="sms.msg" class="sms-msg">{{ sms.msg }}</p></div><footer class="modal-foot"><button class="btn" @click="sms.show = false">取消</button><button class="btn primary" :disabled="sms.verifying" @click="smsVerify">{{ sms.verifying ? '验证并添加中…' : '验证并添加' }}</button></footer></section>
+  </section>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessageBox } from 'element-plus'
-import { getAccounts, getPlatforms, createAccount, updateAccount, deleteAccount, checkAccount, refreshAccountQuota, getAccountModels } from '../api'
+import { getAccounts, getPlatforms, createAccount, updateAccount, deleteAccount, checkAccount, getAccountModels } from '../api'
 import { toastOk, toastErr } from '../lib/toast'
+import { copyText } from '../lib/clipboard'
 
 const items = ref([])
 const platforms = ref([])
@@ -249,6 +53,11 @@ const saving = ref(false)
 const q = ref('')
 const platformFilter = ref('')
 const statusFilter = ref('')
+const selected = ref([])
+const batchBusy = ref(false)
+const allSelected = computed(() => items.value.length > 0 && items.value.every((a) => selected.value.includes(a.id)))
+const someSelected = computed(() => { const n = items.value.filter((a) => selected.value.includes(a.id)).length; return n > 0 && n < items.value.length })
+function toggleAll(event) { selected.value = event.target.checked ? items.value.map((a) => a.id) : [] }
 
 const dialog = ref({ show: false, mode: 'create', platform_id: null, name: '', credential: '', credentialMode: 'cookie' })
 const credentialModes = [
@@ -257,9 +66,44 @@ const credentialModes = [
   { id: 'json', label: 'JSON 凭据' },
   { id: 'browser', label: '浏览器登录引导' },
 ]
+// 按平台自适应可用的凭据方式：不同平台只给出它真正支持的接入方式
+// 优先用平台 key 区分（trae/workbuddy 同为 openai_compat 适配器，需 key 才分得开）
+function modesForPlatform(p) {
+  const key = String(p?.key || '').toLowerCase()
+  const ad = String(p?.adapter || '').toLowerCase()
+  const pick = (ids) => ids.map(id => credentialModes.find(m => m.id === id)).filter(Boolean)
+  if (key.includes('tabbit') || ad === 'tabbit') return pick(['cookie', 'browser'])
+  if (key === 'trae') return pick(['browser', 'cookie'])
+  if (key === 'workbuddy') return pick(['browser', 'json'])
+  if (key === 'loomy' || ad === 'loomy') return pick(['token', 'json'])
+  if (ad === 'openai_compat') return pick(['token', 'json'])
+  return credentialModes
+}
+const credentialModesFor = computed(() => modesForPlatform(currentPlatform.value))
+// 编辑回填：'session' 与 token 同族，统一落到 Token 页签，保存时保留原值
+function modeForAccount(a) {
+  const p = platforms.value.find(x => x.id === a.platform_id) || {}
+  const allowed = modesForPlatform(p).map(m => m.id)
+  const orig = a.credential_type === 'session' ? 'token' : a.credential_type
+  return allowed.includes(orig) ? orig : (allowed[0] || 'cookie')
+}
+// 切平台时同步修正凭据模式（保证落在该平台可用集合内）
+watch(() => dialog.value.platform_id, () => {
+  const allowed = credentialModesFor.value.map(m => m.id)
+  if (!allowed.includes(dialog.value.credentialMode)) dialog.value.credentialMode = allowed[0] || 'cookie'
+})
 const models = ref({ show: false, items: [], name: '', accountId: null, loading: false })
 const workbuddy = ref({ show: false, state: '', url: '', message: '', timer: null })
+let workbuddyPollTimer = null
+let traePollTimer = null
+let smsCountdownTimer = null
+function stopWorkbuddyPolling() {
+  if (workbuddyPollTimer !== null) clearInterval(workbuddyPollTimer)
+  workbuddyPollTimer = null
+  workbuddy.value.timer = null
+}
 async function openWorkbuddyLogin() {
+  stopWorkbuddyPolling()
   workbuddy.value = { show: true, state: '', url: '', message: '正在生成授权地址…', timer: null }
   try {
     const response = await fetch('/api/login/workbuddy/start', { method: 'POST' })
@@ -268,7 +112,8 @@ async function openWorkbuddyLogin() {
     workbuddy.value.state = payload.state
     workbuddy.value.url = payload.url
     workbuddy.value.message = '请在授权页面完成登录，正在等待授权…'
-    workbuddy.value.timer = setInterval(pollWorkbuddyStatus, 3000)
+    workbuddyPollTimer = setInterval(pollWorkbuddyStatus, 3000)
+    workbuddy.value.timer = workbuddyPollTimer
     pollWorkbuddyStatus()
   } catch (error) {
     workbuddy.value.message = `授权初始化失败：${error.message}`
@@ -297,17 +142,10 @@ async function pollWorkbuddyStatus() {
     workbuddy.value.message = `状态查询失败：${error.message}`
   }
 }
-function stopWorkbuddyPolling() {
-  if (workbuddy.value.timer) clearInterval(workbuddy.value.timer)
-  workbuddy.value.timer = null
-}
 async function copyWorkbuddyUrl() {
-  try {
-    await navigator.clipboard.writeText(workbuddy.value.url)
-    toastOk('授权地址已复制')
-  } catch {
-    toastErr('复制失败，请手动复制链接')
-  }
+  const ok = await copyText(workbuddy.value.url)
+  if (ok) toastOk('授权地址已复制')
+  else toastErr('复制失败，请手动复制链接')
 }
 
 // ── 手机验证码添加（发短信建号） ──
@@ -357,11 +195,16 @@ async function smsSend() {
 }
 function startSmsTimer(sec) {
   sms.value.timer = sec
-  if (sms.value.tick) clearInterval(sms.value.tick)
-  sms.value.tick = setInterval(() => {
+  if (smsCountdownTimer !== null) clearInterval(smsCountdownTimer)
+  smsCountdownTimer = setInterval(() => {
     sms.value.timer -= 1
-    if (sms.value.timer <= 0) clearInterval(sms.value.tick)
+    if (sms.value.timer <= 0) {
+      clearInterval(smsCountdownTimer)
+      smsCountdownTimer = null
+      sms.value.tick = null
+    }
   }, 1000)
+  sms.value.tick = smsCountdownTimer
 }
 async function smsVerify() {
   const s = sms.value
@@ -381,7 +224,9 @@ async function smsVerify() {
     if (j.ok) {
       s.msg = `✅ 添加成功：${j.account?.name || ''}（状态 ${j.account?.status || ''}）`
       toastOk('🎉 账号已添加并入库！')
-      if (s.tick) clearInterval(s.tick)
+      if (smsCountdownTimer !== null) clearInterval(smsCountdownTimer)
+      smsCountdownTimer = null
+      s.tick = null
       s.show = false
       await reload()
     } else {
@@ -468,28 +313,44 @@ async function traeStatus() {
   } catch (e) { /* 沙箱未启动时静默 */ }
 }
 function helperLink(ext) {
-  const base = traeLogin.value.relayBase || '/'
-  return `${base}/web/login/download?as=${ext}`
+  try {
+    const configuredBase = traeLogin.value.relayBase
+    const base = !configuredBase || configuredBase === '/' ? window.location.origin : configuredBase
+    const url = new URL('/web/login/download', new URL(base, window.location.origin))
+    if (!['http:', 'https:'].includes(url.protocol)) return ''
+    url.searchParams.set('as', ext)
+    return url.href
+  } catch {
+    return ''
+  }
 }
 function openAuthPage() {
-  const base = traeLogin.value.relayBase || '/'
-  window.open(`${base}/web/login`, '_blank', 'noopener=false')
+  try {
+    const configuredBase = traeLogin.value.relayBase
+    const base = !configuredBase || configuredBase === '/' ? window.location.origin : configuredBase
+    const url = new URL('/web/login', new URL(base, window.location.origin))
+    if (!['http:', 'https:'].includes(url.protocol)) return
+    window.open(url.href, '_blank', 'noopener,noreferrer')
+  } catch { return }
 }
 function openTraeLogin() {
   traeLogin.value.show = true
   traeLogin.value.url = '/novnc/vnc.html?autoconnect=1&resize=scale&path=websockify&reconnect=1&show_dot=1'
   fetch(`${TRAE_API}/open`, { method: 'POST' }).catch(() => {})
+  if (traePollTimer !== null) { clearInterval(traePollTimer); traePollTimer = null }
   traeStatus()
-  if (traeLogin.value.timer) clearInterval(traeLogin.value.timer)
-  traeLogin.value.timer = setInterval(traeStatus, 4000)
+  traePollTimer = setInterval(traeStatus, 4000)
+  traeLogin.value.timer = traePollTimer
 }
 function closeTraeLogin() {
-  if (traeLogin.value.timer) { clearInterval(traeLogin.value.timer); traeLogin.value.timer = null }
+  if (traePollTimer !== null) { clearInterval(traePollTimer); traePollTimer = null }
+  traeLogin.value.timer = null
   traeLogin.value.savedFlash = false
 }
 async function resetSandbox() {
   try {
-    await fetch(`${TRAE_API}/reset`, { method: 'POST' })
+    const r = await fetch(`${TRAE_API}/reset`, { method: 'POST' })
+    if (!r.ok) throw new Error('HTTP ' + r.status)
     toastOk('已重置到 trae2api 登录页')
   } catch (e) { toastErr('重置失败') }
 }
@@ -561,6 +422,48 @@ function resetText(a) {
   return '数据为上次检测结果'
 }
 
+const CRED_HELP = {
+  cookie: ['浏览器登录该平台网页版,按 F12 打开开发者工具 → 应用/存储 → Cookies', '选中该站点域名,复制整条 Cookie 串(形如 a=1; b=2; session=...)', '回到本弹窗粘贴到「凭据内容」,保存后面板立即检测'],
+  token: ['从平台客户端的登录态文件,或「个人设置 → 访问令牌」处复制 Token / API Key', '回到本弹窗粘贴到「凭据内容」,保存后面板立即检测'],
+  json: ['复制平台导出的完整 JSON 凭据(含 token / refresh 等字段,不要漏字段)', '回到本弹窗粘贴到「凭据内容」,保存后面板立即检测'],
+  browser: ['先在本机运行平台客户端完成登录,或通过面板的浏览器登录入口登录', '登录后取出会话凭据,切回 Cookie / Token 方式粘贴提交'],
+}
+const credHelp = computed(() => {
+  const platform = platforms.value.find((item) => item.id === dialog.value.platform_id) || {}
+  const allowed = modesForPlatform(platform).map((mode) => mode.id)
+  const steps = []
+  allowed.forEach((id) => { (CRED_HELP[id] || []).forEach((text) => steps.push(text)) })
+  return { title: `${platform.name || '该平台'} · 凭据获取步骤`, steps: steps.length ? steps : ['该平台暂无预置说明,请按平台文档提交 Cookie 或 Token。'], hint: credentialHint.value }
+})
+async function batchCheck() {
+  const targets = items.value.filter((a) => selected.value.includes(a.id))
+  if (!targets.length) return
+  batchBusy.value = true
+  let done = 0
+  for (const a of targets) {
+    try { await checkAccount(a.id); done += 1 } catch { /* 单个失败不打断批量 */ }
+  }
+  batchBusy.value = false
+  toastOk(`批量检测完成:成功 ${done}/${targets.length}`)
+  await reload()
+}
+async function batchDelete() {
+  const targets = items.value.filter((a) => selected.value.includes(a.id))
+  if (!targets.length) return
+  try {
+    await ElMessageBox.confirm(`确定删除选中的 ${targets.length} 个账号吗?此操作不可恢复。`, '批量删除确认', { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' })
+  } catch { return }
+  batchBusy.value = true
+  let done = 0
+  for (const a of targets) {
+    try { await deleteAccount(a.id); done += 1 } catch { /* 继续删其余的 */ }
+  }
+  batchBusy.value = false
+  selected.value = []
+  toastOk(`批量删除完成:成功 ${done}/${targets.length}`)
+  await reload()
+}
+
 async function reload() {
   loading.value = true
   try {
@@ -574,6 +477,7 @@ async function reload() {
       list = list.filter((a) => (a.name + (a.platform_name || '') + (a.user_info?.secret_mobile || '') + (a.user_info?.id || '')).toLowerCase().includes(s))
     }
     items.value = list
+    selected.value = selected.value.filter((id) => list.some((a) => a.id === id))
   } catch (e) {
     toastErr('加载账号失败：' + (e.response?.data?.detail || e.message))
   } finally {
@@ -592,16 +496,21 @@ async function loadPlatforms() {
 }
 
 function openCreate() {
-  dialog.value = { show: true, mode: 'create', platform_id: dialog.value.platform_id || platforms.value[0]?.id, name: '', credential: '', credentialMode: 'cookie' }
+  const pid = dialog.value.platform_id || platforms.value[0]?.id
+  const p = platforms.value.find(x => x.id === pid) || {}
+  dialog.value = { show: true, mode: 'create', tab: 'cred', platform_id: pid, name: '', credential: '', credentialMode: (modesForPlatform(p)[0]?.id || 'cookie') }
 }
 function openEdit(a) {
-  dialog.value = { show: true, mode: 'edit', id: a.id, platform_id: a.platform_id, name: a.name, credential: '', credentialMode: 'cookie' }
+  dialog.value = { show: true, mode: 'edit', tab: 'cred', id: a.id, platform_id: a.platform_id, name: a.name, credential: '', credentialMode: modeForAccount(a), originalType: a.credential_type }
 }
 async function save() {
   const d = dialog.value
   if (!d.platform_id) return toastErr('请选择平台')
   if (d.mode === 'create' && !d.name.trim()) return toastErr('请填写备注名')
-  if (d.mode === 'create' && d.credentialMode === 'browser') return toastErr('请先登录并切换到 Cookie、Token 或 JSON 凭据方式填写凭据')
+  if (d.mode === 'create' && d.credentialMode === 'browser') {
+    const others = credentialModesFor.value.filter(m => m.id !== 'browser').map(m => m.label).join(' / ')
+    return toastErr(`请先登录后切换到 ${others} 填写凭据`)
+  }
   if (d.mode === 'create' && !d.credential.trim()) return toastErr('请填写凭据')
   saving.value = true
   try {
@@ -612,7 +521,7 @@ async function save() {
       const payload = { name: d.name.trim() }
       if (d.credential.trim()) {
         payload.credential = d.credential.trim()
-        payload.credential_type = d.credentialMode
+        payload.credential_type = (d.credentialMode === 'token' && d.originalType === 'session') ? 'session' : d.credentialMode
       }
       await updateAccount(d.id, payload)
       toastOk('账号已更新')
@@ -676,8 +585,82 @@ function resetFilters() {
   reload()
 }
 
+onBeforeUnmount(() => {
+  stopWorkbuddyPolling()
+  closeTraeLogin()
+  if (smsCountdownTimer !== null) clearInterval(smsCountdownTimer)
+  smsCountdownTimer = null
+  sms.value.tick = null
+})
+
 onMounted(() => {
   loadPlatforms()
   reload()
 })
 </script>
+<style scoped>
+.accounts-view { min-width: 0; color: var(--text); }
+.accounts-view .page-head { align-items: flex-end; }
+.accounts-view .head-actions { gap: 6px; }
+.accounts-view .filters { align-items: center; }
+.accounts-view .platform-seg { max-width: 100%; overflow-x: auto; }
+.accounts-view .status-seg { flex: 0 0 auto; }
+.accounts-view .search { margin-left: auto; }
+.accounts-view .search .input { width: 240px; }
+.accounts-view .tbl-wrap { min-height: 150px; }
+.accounts-view table.tbl { min-width: 980px; }
+.accounts-view .tbl th:first-child, .accounts-view .tbl td:first-child { width: 38px; }
+.accounts-view .tbl th:nth-child(2) { min-width: 230px; }
+.accounts-view .tbl th:nth-child(6) { min-width: 190px; }
+.accounts-view .acct-copy { min-width: 0; }
+.accounts-view .acct-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 210px; }
+.accounts-view .quota-line { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 5px; color: var(--text-2); font-size: 11.5px; }
+.accounts-view .quota-cell .bar { margin-bottom: 5px; }
+.accounts-view .row-actions { display: flex; gap: 2px; white-space: nowrap; }
+.accounts-view .row-actions .btn { padding-inline: 7px; }
+.accounts-view .empty { min-height: 180px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--text-2); }
+.accounts-view .empty strong { color: var(--text); font-size: 13px; }
+.accounts-view .empty span { color: var(--text-3); }
+.accounts-view .badge .dot { width: 6px; height: 6px; box-shadow: none; }
+.accounts-view .modal { width: min(560px, calc(100vw - 32px)); }
+.accounts-view .modal.wide { width: min(720px, calc(100vw - 32px)); }
+.accounts-view .modal .field { margin-bottom: 14px; }
+.accounts-view .field .input, .accounts-view .field .select { width: 100%; }
+.accounts-view textarea.input { height: auto; min-height: 112px; padding: 9px 10px; resize: vertical; }
+.accounts-view .credential-tabs { width: max-content; max-width: 100%; overflow-x: auto; }
+.accounts-view .browser-guide { padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.accounts-view .browser-guide p, .accounts-view .task-tip { color: var(--text-2); margin-top: 5px; }
+.accounts-view .hint { display: block; margin-top: 6px; color: var(--text-3); font-size: 11px; }
+.accounts-view .model-list { display: flex; flex-wrap: wrap; gap: 7px; }
+.accounts-view .daily-task-list { border-top: 1px solid var(--border); }
+.accounts-view .daily-task-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.accounts-view .task-account { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.accounts-view .spacer { flex: 1; }
+.accounts-view .oauth-steps { padding-left: 20px; color: var(--text-2); }
+.accounts-view .oauth-steps li { padding: 5px 0; }
+.accounts-view .oauth-steps a, .accounts-view .auth-link { color: var(--primary); overflow-wrap: anywhere; }
+.accounts-view details { margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px; }
+.accounts-view summary { cursor: pointer; color: var(--text-2); }
+.accounts-view .trae-login-wrap { height: 52vh; min-height: 260px; margin-top: 10px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.accounts-view .trae-login-frame { width: 100%; height: 100%; border: 0; }
+.accounts-view .auth-link { display: block; margin-bottom: 8px; }
+.accounts-view .sms-code { display: flex; gap: 8px; }
+.accounts-view .sms-code .input { flex: 1; min-width: 0; }
+.accounts-view .sms-msg { margin-top: 10px; color: var(--text-2); }
+@media (max-width: 767px) {
+  .accounts-view .head-actions { width: 100%; }
+  .accounts-view .head-actions .btn { flex: 1 1 140px; }
+  .accounts-view .filters { align-items: stretch; }
+  .accounts-view .platform-seg, .accounts-view .status-seg { width: 100%; overflow-x: auto; }
+  .accounts-view .search { width: 100%; margin-left: 0; }
+  .accounts-view .search .input { width: 100%; }
+  .accounts-view .daily-task-row { flex-wrap: wrap; }
+}
+.batch-bar{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border);background:rgba(127,127,127,.06);font-size:12px;color:var(--text-2)}
+.batch-bar strong{color:var(--text-1)}
+.cred-help{font-size:13px;line-height:1.75;color:var(--text-2)}
+.cred-help strong{display:block;color:var(--text-1);margin-bottom:6px}
+.cred-help ol{margin:0;padding-left:20px}
+.cred-help li{margin:3px 0}
+.cred-help .hint{display:block;margin-top:8px}
+</style>

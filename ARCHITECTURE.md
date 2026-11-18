@@ -8,7 +8,7 @@
 ## 目录结构
 
 ```
-`<项目根>`/
+/opt/aam-panel/
 ├── ARCHITECTURE.md          # 本文档
 ├── backend/
 │   ├── main.py              # FastAPI 入口（挂载 /api, /v1, 静态根目录）
@@ -35,7 +35,7 @@
 └── data/aam.db              # SQLite（WAL 模式，双实例共享）
 ```
 
-端口 **8710**（后端 API + 静态前端，同端口）。请避开已被占用的端口。
+端口 **8710**（后端 API + 静态前端，同端口）。如被占用可用 `--port` 指定其它端口。
 
 ## DB Schema（sqlite3）
 
@@ -126,12 +126,15 @@ POST /api/accounts/{id}/refresh-quota → 只刷积分
 GET  /api/accounts/{id}/models  → {items:[model_id...]}（该账号可用模型，带缓存60s）
 GET  /api/stats?days=7          → 请求趋势 [{date,ok,err}]
 GET  /api/logs?limit=100        → 请求日志
-GET  /api/settings / POST /api/settings → {panel_key, gateway_key, ...}
+POST /api/logs/clear            → 清空 request_log → {ok,deleted}(网关页与总览统计随之归零)
+POST /api/auto-check/run        → 立刻跑一轮全量账号检测 → {ok,at,total,active,expired,error,unknown,pushed}
+GET  /api/settings / POST /api/settings → {panel_key, gateway_key, daily_auto_check, notify_webhook,
+                                           auto_check_last_at, auto_check_next_at, auto_check_summary}
 ```
 
 ## 统一网关契约（/v1/*，OpenAI 兼容）
 
-鉴权：`Authorization: Bearer <gateway_key>`（settings 里配，默认 `aam-local-key`）。
+鉴权:`Authorization: Bearer <gateway_key>`(settings 里配;必须是显式设置的随机值,公开默认值 `aam-local-key` 会被拒绝)。
 
 ```
 GET  /v1/models
@@ -151,8 +154,8 @@ body: OpenAI 标准 {model, messages, stream, temperature?...}
 → usage 字段可全 0（上游不提供 token 计量）
 
 鉴权（多 key）：
-   1. 主密钥 = settings.gateway_key（默认 aam-local-key，设置页可改）
-   2. tokens 表任意 enabled=1 行（可绑定 platform_key 限定范围，当前记录用途，不强制过滤模型）
+   1. 主密钥 = settings.gateway_key(须显式设置随机值,设置页可改)
+   2. tokens 表任意 enabled=1 行(可绑定 platform_key 限定范围:/v1/models 只返回该平台模型,调用其它平台模型 → 403 permission_error;未绑定=全部平台)
    3. 其余 → 401 {"error":{"message":"invalid API key"}}
    4. 每次调用写入 request_log，并给 token 记 last_used_at / request_count
 ```
@@ -160,7 +163,7 @@ body: OpenAI 标准 {model, messages, stream, temperature?...}
 ## 部署（systemd 双实例，IPv6 双栈）
 
 ```bash
-cd `<项目根>`
+cd /opt/aam-panel
 python3 -m venv venv && venv/bin/pip install -r backend/requirements.txt   # httpx[socks] fastapi uvicorn
 cd frontend && npm install --registry=https://registry.npmmirror.com && npm run build   # 产物 → backend/static
 cat > /etc/systemd/system/aam-panel-v4.service <<'EOF'
@@ -168,8 +171,8 @@ cat > /etc/systemd/system/aam-panel-v4.service <<'EOF'
 Description=AAM Panel IPv4
 [Service]
 Type=simple
-WorkingDirectory=`<项目根>`
-ExecStart=`<项目根>`/venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8710
+WorkingDirectory=/opt/aam-panel
+ExecStart=/opt/aam-panel/venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8710
 Restart=always
 [Install]
 WantedBy=multi-user.target
@@ -189,7 +192,7 @@ systemctl daemon-reload && systemctl enable --now aam-panel-v4 aam-panel-v6
 平台无关参数：`base_url`（web.tabbit.com 或 web.tabbit.ai）、`proxy`（socks5h，国际版必填）、账号 cookie。
 
 ### 常量
-- SIGN_KEY 默认 `AAM_SIGN_KEY` 环境变量值（随机生成）；遇 499 → GET /chat/sign-key 刷新（进程内缓存 10 分钟）
+- 签名密钥**不再硬编码常量**:运行时 `GET /chat/sign-key` 获取(按平台 key 进程内缓存 10 分钟),遇签名失效自动刷新并重试
 - VERSION 默认 `1.1.39(10101039)`；`x-req-ctx` = base64(VERSION)
 
 ### 签名 headers（每次请求）
@@ -230,13 +233,25 @@ Accept: application/json 或 text/event-stream
 ### 多轮对话
 Tabbit 是会话制，但网关无状态：把 messages 拼成带角色标注的文本（`[User]\n...\n\n[Assistant]\n...`）作为单条 content 发送（同 tabbit-toy 做法）。
 
-## 前端页面（Vue3 + Element Plus，5 个视图）
+## 自动化任务(进程内调度)
+
+`backend/scheduler.py`,随 FastAPI lifespan 启动。v4/v6 双实例都会启动调度器,用 `settings.auto_check_last_date` 原子抢占,保证一天只真跑一次。
+
+- 触发:`settings.daily_auto_check != 'off'` 时,每天 **08:00**(本机时区)检测全部 `enabled=1` 账号的状态与积分(并发 4,单账号失败不影响其它);
+- 记录:`settings.auto_check_last_at` / `auto_check_next_at` / `auto_check_summary`(JSON:`total/active/expired/error/unknown/pushed`);
+- 推送:`settings.notify_webhook` 非空时 POST `{"type":"aam_auto_check","text":"...","summary":{...}}`;留空则只在面板记录,不推送;
+- 手动触发:`POST /api/auto-check/run`(跳过当日去重,立刻跑一轮并返回汇总);
+- 关闭:`daily_auto_check=off`(跳过当天),或环境变量 `AAM_DISABLE_SCHEDULER=1`(测试隔离用);
+- 与 Trae 签到(crontab 08:05)互不依赖,各自独立。
+
+## 前端页面(Vue3 + Element Plus,8 个视图)
 
 1. **Dashboard 总览**：KPI 卡（账号总数/活跃/今日请求/错误率）+ 平台横条（每平台账号数、平均用量进度条）+ 最近请求表
-2. **Accounts 账号**：核心页。筛选（平台/状态/搜索）+ 账号表格或卡片：备注名、平台徽标、状态 pill（有效/过期/错误/未检查）、会员等级、积分进度条（usage_pct）、最后检查时间、操作（测活、刷积分、看模型、编辑、删除）
-3. **Platforms 平台**：内置平台卡片（可禁用）+ 添加自定义平台（key/name/adapter/base_url/proxy）
-4. **Gateway 网关**：显示统一入口 base_url + key（可改）+ 复制按钮 + curl 示例 + 模型列表（带前缀）+ 请求统计图
-5. **Settings 设置**：面板访问 key、测活间隔、清理日志
+2. **Accounts 账号**:核心页。筛选(平台/状态/搜索)+ 账号表格或卡片:备注名、平台徽标、状态 pill(有效/过期/错误/未检查)、会员等级、积分进度条(usage_pct)、最后检查时间、操作(测活、刷积分、看模型、编辑、删除);表头/行复选框支持全选与半选,选中后出现批量条(批量检测 / 批量删除,删除二次确认);新增/编辑弹窗「凭据说明」页签按平台 adapter 给出该平台可用的取值步骤
+3. **Platforms 平台**:内置平台卡片(可禁用)+ 添加自定义平台(key/name/adapter/base_url/proxy)
+4. **Gateway 网关**:显示统一入口 base_url + key(可改)+ 复制按钮 + curl 示例 + 模型列表(带前缀)+ 请求统计图
+5. **Settings 设置**:面板管理密钥、网关密钥、每日自动检测开关、检测汇总 Webhook、(上次/下次)自动检测时间、立即检测一次、清理日志
+6. **Tokens 密钥 / DailyTasks 每日任务 / Requests 请求日志**:密钥绑定平台、自动任务与调度状态、请求明细
 
 交互要求（硬性）：
 - 所有操作真实调后端 API，禁止空壳按钮/纯前端假数据

@@ -1,13 +1,21 @@
+# AAM · AI 账号聚合面板 systemd 服务示例
+# 用法：
+#   sudo cp deploy/aam-panel.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aam-panel
+# 按实际部署路径修改 WorkingDirectory / ExecStart / User。
 [Unit]
-Description=AAM AI Account Manager Panel
+Description=AAM Panel (AI Account Manager)
 After=network.target
 
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/opt/aam-panel
-EnvironmentFile=/opt/aam-panel/.env
-ExecStart=/opt/aam-panel/venv/bin/python -m uvicorn backend.main:app --host 0.0.0.0 --port 8710
+EnvironmentFile=-/opt/aam-panel/.env
+# 可选：独立环境文件放签名密钥等（chmod 600）
+# EnvironmentFile=-/etc/aam-panel.env
+ExecStart=/opt/aam-panel/venv/bin/python -m uvicorn backend.main:app --host 127.0.0.1 --port 8710
 Restart=always
 RestartSec=3
 

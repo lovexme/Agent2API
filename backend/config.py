@@ -7,7 +7,6 @@ DB_PATH = DATA_DIR / "aam.db"
 PORT = 8710
 DEFAULT_GATEWAY_KEY = "aam-local-key"
 VERSION = "1.1.39(10101039)"
-SIGN_KEY = os.environ.get("AAM_SIGN_KEY", "CHANGE_ME_32_hex_sign_secret_000000000000")
 # Loomy 登录签名凭据：优先读环境变量（可在 systemd unit 注入轮换），缺省保持现值
 LOOMY_AK_ID = os.environ.get("LOOMY_AK_ID", "")
 LOOMY_AK_SECRET = os.environ.get("LOOMY_AK_SECRET", "")

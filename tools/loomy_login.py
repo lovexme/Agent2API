@@ -19,11 +19,30 @@ import uuid
 
 import requests
 
+def _load_env_file(path="/etc/aam-panel.env"):
+    """从 systemd EnvironmentFile 同款文件补齐凭据(不覆盖已存在的环境变量)。"""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    except OSError:
+        pass
+
+
+_load_env_file()
+
 ACCOUNT_BASE = "https://account.xfinfr.com"
+# 凭据只从环境变量 / /etc/aam-panel.env 读取,源码内不留明文
 AK_ID = os.environ.get("LOOMY_AK_ID", "")
 AK_SECRET = os.environ.get("LOOMY_AK_SECRET", "")
 APPID = os.environ.get("LOOMY_APPID", "GM3LOOMY")
-AAM = os.environ.get("AAM_BASE_URL", "http://127.0.0.1:8710")
+if not AK_ID or not AK_SECRET:
+    raise SystemExit("缺少 Loomy 凭据:请设置 LOOMY_AK_ID / LOOMY_AK_SECRET(或写入 /etc/aam-panel.env)")
+AAM = "http://127.0.0.1:8710"
 
 BASE = {"appid": APPID, "modelid": "Web", "version": "1.0.0",
         "devid": "web", "ua": "Loomy|Desktop|Electron|macOS",
@@ -103,7 +122,7 @@ def verify_code(phone: str, mcode: str, msgid: str):
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "help"
     if cmd == "send":
-        phone = sys.argv[2] if len(sys.argv) > 2 else "13800138000"
+        phone = sys.argv[2] if len(sys.argv) > 2 else "15102985065"
         send_code(phone)
     elif cmd == "verify":
         if len(sys.argv) < 5:

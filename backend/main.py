@@ -11,15 +11,36 @@ from .trae_login import router as trae_login_router, novnc_router
 from .loomy_login_api import router as loomy_login_router
 from .tabbit_login_api import router as tabbit_login_router
 from .workbuddy_login_api import router as workbuddy_login_router
+from .assistant_api import router as assistant_router
 
 
 @asynccontextmanager
 async def lifespan(app):
     db.init_db()
-    yield
+    import os
+    from . import scheduler
+    # 每日 08:00 自动检测(v4/v6 双实例靠 settings 日期戳去重);AAM_DISABLE_SCHEDULER=1 可关闭(测试用)
+    if os.environ.get("AAM_DISABLE_SCHEDULER", "").strip().lower() not in ("1", "true", "yes"):
+        scheduler.start()
+    try:
+        yield
+    finally:
+        await scheduler.stop()
 
 
 app = FastAPI(title="AAM Panel", lifespan=lifespan)
+
+# 静态资源缓存策略：index.html 每次校验（升级后立即生效），assets 哈希文件长缓存
+@app.middleware("http")
+async def cache_policy(request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path == "/" or path.endswith(".html"):
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+    return response
+
 app.include_router(auth_router)       # /api/admin/*（登录入口/会话）
 app.include_router(api_router)      # /api/*
 app.include_router(gateway_router)  # /v1/*
@@ -28,6 +49,7 @@ app.include_router(novnc_router)       # /novnc/* (noVNC 代理)
 app.include_router(loomy_login_router)  # /api/login/loomy/* (发短信添加账号)
 app.include_router(tabbit_login_router)  # /api/login/tabbit/* (发短信添加账号)
 app.include_router(workbuddy_login_router)  # /api/login/workbuddy/* (OAuth 授权)
+app.include_router(assistant_router)  # /api/assistant/* (AI 助手)
 
 static = Path(__file__).resolve().parent / "static"
 if static.exists():
