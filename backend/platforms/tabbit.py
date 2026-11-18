@@ -124,41 +124,43 @@ class TabbitAdapter(PlatformAdapter):
                         except json.JSONDecodeError: continue
                         yield json.dumps({"type":event_name,"data":payload},ensure_ascii=False)
                         event_name=""
-    async def _stream_retry(self,account,body):
-        """流式：若整个流没有产出任何 message_chunk（被上游静默限流），自动重试至多 2 次。
+    async def _stream_retry(self, account, body):
+        """流式：若整个流没有产出任何 message_chunk 内容（被上游静默限流），自动重试至多 2 次。
 
-        注意：上游真正的错误事件(error+code)会立即透传，不当作空内容处理。
+        注意：上游真正的错误事件(type=error)立即抛错透传，不当作空内容重试。
+        实现：先缓冲事件直到出现首个「有内容」的 chunk；出现后才 flush 缓冲并直通余下流。
+        若整条流结束都没有内容，丢弃缓冲（客户端从未收到）后重试，避免重复事件。
         """
         for attempt in range(3):
-            first, rest = await self._first_chunk(account, body)
-            if first is not None:
-                yield first
-                if rest:
-                    async for item in rest:
-                        yield item
+            buf = []
+            found = False
+            ag = self._stream(account, body)
+            async for raw in ag:
+                buf.append(raw)
+                try:
+                    ev = json.loads(raw)
+                except Exception:
+                    continue
+                if not isinstance(ev, dict):
+                    continue
+                typ = ev.get("type")
+                data = ev.get("data")
+                if not isinstance(data, dict):
+                    data = {}
+                if typ == "error":
+                    raise RuntimeError("Tabbit upstream error: code=%s" % (data.get("code") or "?"))
+                if typ == "message_chunk" and data.get("content"):
+                    found = True
+                    break
+            if found:
+                for b in buf:
+                    yield b
+                async for raw in ag:
+                    yield raw
                 return
             if attempt < 2:
                 await asyncio.sleep(3)
         raise RuntimeError("Tabbit stream returned no content (rate limited?)")
-    async def _first_chunk(self, account, body):
-        """聚合到首个有效数据：返回 (first_raw, rest_iter) 或 (None, None)。
-
-        若中途出现上游错误事件(code 非空)，原样抛出，避免重试掩盖真实错误。
-        """
-        collected = []
-        async for raw in self._stream(account, body):
-            collected.append(raw)
-            try:
-                ev = json.loads(raw)
-            except Exception:
-                continue
-            typ = ev.get("type")
-            data = ev.get("data") or {}
-            if typ == "error":
-                raise RuntimeError("Tabbit upstream error: code=%s" % (data.get("code") or "?"))
-            if typ == "message_chunk" and data.get("content"):
-                return collected[0], iter(collected[1:])
-        return None, None
     @staticmethod
     def _parse_sse(text):
         chunks=[]; event_name=""
