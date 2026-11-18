@@ -53,9 +53,9 @@ async def tabbit_send(request: Request, body: SMSInput):
         raise HTTPException(400, "手机号格式不对（11 位大陆号）")
     client = request.client
     ip = client.host if client else "?"
-    if not db.rate_limit("sms_send", f"phone:{phone}", 60):
+    if not db.rate_limit("sms_send:tabbit", f"phone:{phone}", 60):
         raise HTTPException(429, "该手机号 60 秒内只能发送一次，请稍后再试")
-    if not db.rate_limit("sms_send", f"ip:{ip}", 5):
+    if not db.rate_limit("sms_send_ip", f"ip:{ip}", 5):
         raise HTTPException(429, "发送过于频繁，请稍后再试")
     payload = {"uuid": _uuid64(), "platform": "1", "version": "", "app": "1000", "mobile": phone}
     async with httpx.AsyncClient(timeout=25) as c:
@@ -86,7 +86,7 @@ async def tabbit_verify(request: Request, body: VerifyInput):
         raise HTTPException(400, "请输入验证码")
     client = request.client
     ip = client.host if client else "?"
-    if not db.rate_limit("sms_verify", f"phone:{phone}", 10):
+    if not db.rate_limit("sms_verify:tabbit", f"phone:{phone}", 10):
         raise HTTPException(429, "验证次数过于频繁，请稍后再试")
     payload = {"uuid": _uuid64(), "platform": "1", "version": "",
                "app": "1000", "mobile": phone, "smsCode": mcode}

@@ -150,7 +150,7 @@ async function copyWorkbuddyUrl() {
 
 // ── 手机验证码添加（发短信建号） ──
 const smsPlatforms = computed(() => platforms.value.filter(p => ['loomy', 'tabbit-domestic'].includes(p.key)))
-const sms = ref({ show: false, platform_id: null, phone: '', code: '', msgid: '', sent: false, msg: '', timer: 0, sending: false, verifying: false, tick: null })
+const sms = ref({ show: false, platform_id: null, phone: '', code: '', msgid: '', sent: false, sentKey: '', msg: '', timer: 0, sending: false, verifying: false, tick: null })
 function openSmsLogin() {
   sms.value.show = true
   sms.value.platform_id = smsPlatforms.value[0]?.id || null
@@ -180,6 +180,7 @@ async function smsSend() {
     if (j.ok) {
       if (j.msgid) s.msgid = j.msgid
       s.sent = true
+      s.sentKey = key
       s.msg = `✅ 验证码已发送到 ${ph}（5 分钟内有效）`
       toastOk('验证码已发送，请看手机')
       startSmsTimer(60)
@@ -195,6 +196,18 @@ async function smsSend() {
     s.sending = false
   }
 }
+// 切换平台下拉时重置短信状态（msgid/sent/msgid/timer 残留会把 A 平台验证码污染到 B 平台）
+watch(() => sms.value.platform_id, (nv, ov) => {
+  if (nv === ov) return
+  sms.value.msgid = ''
+  sms.value.sent = false
+  sms.value.sentKey = ''
+  sms.value.msg = ''
+  sms.value.code = ''
+  sms.value.timer = 0
+  if (smsCountdownTimer !== null) { clearInterval(smsCountdownTimer); smsCountdownTimer = null }
+  sms.value.tick = null
+})
 function startSmsTimer(sec) {
   sms.value.timer = sec
   if (smsCountdownTimer !== null) clearInterval(smsCountdownTimer)
@@ -214,11 +227,17 @@ async function smsVerify() {
   if (!s.sent) return toastErr('请先发送验证码')
   if (!s.code.trim()) return toastErr('请输入验证码')
   const key = smsPlatforms.value.find(p => p.id === s.platform_id)?.key
-  if (key !== 'tabbit-domestic' && !s.msgid) return toastErr('发送接口未返回 msgid，请重新发送验证码')
+  if (s.sentKey && s.sentKey !== key) {
+    s.sent = false; s.msgid = ''; s.msg = ''
+    return toastErr('已切换平台，请为当前平台重新发送验证码')
+  }
+  if (!s.msgid && key !== 'tabbit-domestic') return toastErr('发送接口未返回 msgid，请重新发送验证码')
+  if (key !== 'loomy' && key !== 'tabbit-domestic') return toastErr('该平台暂不支持短信登录')
+  const seg = key === 'tabbit-domestic' ? 'tabbit' : key
   s.verifying = true
   s.msg = '验证中…'
   try {
-    const r = await fetch(`/api/login/${key}/verify`, {
+    const r = await fetch(`/api/login/${seg}/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ phone: ph, mcode: s.code.trim(), msgid: s.msgid }),

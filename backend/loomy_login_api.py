@@ -87,9 +87,9 @@ async def loomy_send(request: Request, phone: str = ""):
         raise HTTPException(400, "手机号格式不对（11 位大陆号）")
     client = request.client
     ip = client.host if client else "?"
-    if not db.rate_limit("sms_send", f"phone:{phone}", 60):
+    if not db.rate_limit("sms_send:loomy", f"phone:{phone}", 60):
         raise HTTPException(429, "该手机号 60 秒内只能发送一次，请稍后再试")
-    if not db.rate_limit("sms_send", f"ip:{ip}", 5):
+    if not db.rate_limit("sms_send_ip", f"ip:{ip}", 5):
         raise HTTPException(429, "发送过于频繁，请稍后再试")
     payload = await _api_post("/login/phone/sendMsgCode", {"ccode": "86", "phone": phone, "expire": 300})
     data = payload.get("data") or {}
@@ -111,7 +111,7 @@ async def loomy_verify(request: Request, body: LoomyVerifyInput):
         raise HTTPException(400, "缺少手机号/验证码/msgid")
     client = request.client
     ip = client.host if client else "?"
-    if not db.rate_limit("sms_verify", f"phone:{phone}", 10):
+    if not db.rate_limit("sms_verify:loomy", f"phone:{phone}", 10):
         raise HTTPException(429, "验证次数过于频繁，请稍后再试")
     payload = await _api_post("/login/phone/checkCode", {
         "ccode": "86", "phone": phone, "mcode": mcode, "msgid": msgid, "expire": 1209600})
