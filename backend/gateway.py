@@ -163,10 +163,10 @@ async def completions(body:Completion,request:Request,authorization:str|None=Hea
     try:
         if body.stream:
             async def generate():
-                ok=True; err=""; done=False; has_tool_calls=False
+                ok=True; err=""; done=False; has_tool_calls=False; upstream_finish=None
                 try:
                     yield "data: "+json.dumps(openai_chunk(cid,created,body.model,{"role":"assistant","content":""}),ensure_ascii=False)+"\n\n"
-                    async for raw in await adapter.complete(account,display_model,body.messages,True,body.temperature,tools=body.tools):
+                    async for raw in await adapter.complete(account,display_model,body.messages,True,body.temperature,tools=body.tools,tool_choice=body.tool_choice):
                         if raw=="[DONE]": continue
                         try: event=json.loads(raw)
                         except json.JSONDecodeError: continue
@@ -182,6 +182,8 @@ async def completions(body:Completion,request:Request,authorization:str|None=Hea
                             if value.get("id"): delta_tc["id"]=value["id"]
                             yield "data: "+json.dumps(openai_chunk(cid,created,body.model,{"tool_calls":[delta_tc]}),ensure_ascii=False)+"\n\n"
                             has_tool_calls=True
+                        elif typ=="finish_reason":
+                            upstream_finish = (value or {}).get("finish_reason") or upstream_finish
                         elif typ=="error":
                             # 上游错误不透传：客户端只见固定文案，日志只记错误类型
                             ok=False; err="UpstreamEventError"
@@ -189,7 +191,9 @@ async def completions(body:Completion,request:Request,authorization:str|None=Hea
                             yield "data: "+json.dumps({"error":{"message":"upstream_error","type":"upstream_error"}},ensure_ascii=False)+"\n\n"
                             break
                     if ok:
-                        yield "data: "+json.dumps(openai_chunk(cid,created,body.model,{},"tool_calls" if has_tool_calls else "stop"),ensure_ascii=False)+"\n\n"
+                        # 优先采用上游真实收尾原因(length/tool_calls/stop), 其次工具调用判定
+                        final_finish = upstream_finish or ("tool_calls" if has_tool_calls else "stop")
+                        yield "data: "+json.dumps(openai_chunk(cid,created,body.model,{},final_finish),ensure_ascii=False)+"\n\n"
                         done=True
                         yield "data: [DONE]\n\n"
                 except Exception as exc:
@@ -204,11 +208,14 @@ async def completions(body:Completion,request:Request,authorization:str|None=Hea
                     db.release_account(account["id"])
                     bump_token(token_id)
             return StreamingResponse(generate(),media_type="text/event-stream",headers={"Cache-Control":"no-cache","X-Accel-Buffering":"no"})
-        text=await adapter.complete(account,display_model,body.messages,False,body.temperature,tools=body.tools)
+        text=await adapter.complete(account,display_model,body.messages,False,body.temperature,tools=body.tools,tool_choice=body.tool_choice)
         if isinstance(text, dict):
             # 带 tools 的适配器返回 {role, content, tool_calls}
-            msg = {"role": text.get("role") or "assistant", "content": text.get("content") or ""}
             tcs = text.get("tool_calls")
+            raw_content = text.get("content")
+            # OpenAI 原生规范：有 tool_calls 且无文本时 content 应为 null
+            msg = {"role": text.get("role") or "assistant",
+                   "content": (raw_content or "") if not (tcs and not raw_content) else None}
             if tcs:
                 msg["tool_calls"] = tcs
             finish = "tool_calls" if tcs else "stop"

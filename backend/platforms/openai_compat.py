@@ -182,7 +182,7 @@ class OpenAICompatAdapter(PlatformAdapter):
 
     supports_tools = True
 
-    async def complete(self, account, model, messages, stream=False, temperature=None, tools=None):
+    async def complete(self, account, model, messages, stream=False, temperature=None, tools=None, tool_choice=None):
         """完成一次对话。
 
         - tools 为 None/空: 返回 str（纯文本内容，保持旧契约）
@@ -193,7 +193,7 @@ class OpenAICompatAdapter(PlatformAdapter):
             body["temperature"] = temperature
         if tools:
             body["tools"] = tools
-            body["tool_choice"] = "auto"
+            body["tool_choice"] = tool_choice if tool_choice is not None else "auto"
         if stream:
             return self._stream(account, body)
         async with self._client() as c:
@@ -244,17 +244,24 @@ class OpenAICompatAdapter(PlatformAdapter):
                     try:
                         delta = chunk["choices"][0].get("delta") or {}
                         content = delta.get("content") or ""
+                        fr = chunk["choices"][0].get("finish_reason")
                     except (KeyError, IndexError, TypeError):
                         content = ""
                         delta = {}
+                        fr = None
+                    if fr:
+                        # 上游收尾原因(length/tool_calls/stop)必须转达，否则截断会被报成 stop
+                        yield json.dumps({"type": "finish_reason", "data": {"finish_reason": fr}}, ensure_ascii=False)
                     if content:
                         yield json.dumps({"type": "message_chunk", "data": {"content": content}}, ensure_ascii=False)
                     # 工具调用增量：原样转成 tool_call_chunk 事件，网关拼成 OpenAI delta.tool_calls
                     for tc in (delta.get("tool_calls") or []):
-                        yield json.dumps({"type": "tool_call_chunk", "data": {
-                            "index": tc.get("index", 0),
-                            "id": tc.get("id"),
-                            "type": tc.get("type") or "function",
-                            "function": {"name": (tc.get("function") or {}).get("name"),
-                                         "arguments": (tc.get("function") or {}).get("arguments") or ""},
-                        }}, ensure_ascii=False)
+                        fn = tc.get("function") or {}
+                        tc_data = {"index": tc.get("index", 0), "type": tc.get("type") or "function",
+                                   "function": {}}
+                        if tc.get("id"):  # 首片才有 id，后续增量片为 None 时不下发
+                            tc_data["id"] = tc["id"]
+                        if fn.get("name"):  # 同理 name 只在首片出现
+                            tc_data["function"]["name"] = fn["name"]
+                        tc_data["function"]["arguments"] = fn.get("arguments") or ""
+                        yield json.dumps({"type": "tool_call_chunk", "data": tc_data}, ensure_ascii=False)
