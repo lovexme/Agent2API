@@ -54,6 +54,42 @@ class OpenAICompatAdapter(PlatformAdapter):
         except Exception:
             pass
         quota = {"models": count, "openai_compat": True}
+        # wb2api（WorkBuddy 网关）面板兼容：/panel/api/overview 提供 credits 积分与用户信息。
+        # 通用 OpenAI 兼容上游没有该端点时会 404，静默跳过，不影响原有探活。
+        try:
+            root = self.base[:-3] if self.base.endswith("/v1") else self.base
+            if root:
+                async with self._client() as c:
+                    ov = await c.get(root + "/panel/api/overview", headers=self._headers(account), timeout=8)
+                if ov.status_code == 200:
+                    ovd = ov.json()
+                    accs = ovd.get("accounts") if isinstance(ovd, dict) else None
+                    if isinstance(accs, list) and accs:
+                        try:
+                            ui = account.get("user_info")
+                            ui = json.loads(ui) if isinstance(ui, str) else (ui or {})
+                            uid = str(ui.get("uid") or "")
+                        except Exception:
+                            uid = ""
+                        hit = next((x for x in accs if uid and str(x.get("uid")) == uid), accs[0])
+                        used, total = hit.get("credits"), hit.get("credits_total")
+                        if used is not None:
+                            quota["credits"] = used
+                            quota["credits_total"] = total
+                            if hit.get("credits_earliest_expiry"):
+                                quota["credits_earliest_expiry"] = hit.get("credits_earliest_expiry")
+                            if hit.get("credits_earliest_remaining"):
+                                quota["credits_earliest_remaining"] = hit.get("credits_earliest_remaining")
+                            quota_pct_val = None
+                            try:
+                                if total and float(total) > 0:
+                                    quota_pct_val = round((float(total) - float(used)) / float(total) * 100, 2)
+                            except (TypeError, ValueError):
+                                quota_pct_val = None
+                            if quota_pct_val is not None:
+                                quota["credits_used_pct"] = quota_pct_val
+        except Exception:
+            pass
         # 尝试常见配额/余额端点（不强制）
         for path in ("/dashboard/billing/credit_grants", "/credits", "/quota", "/api/credits"):
             try:
@@ -93,7 +129,8 @@ class OpenAICompatAdapter(PlatformAdapter):
                         "member_level": "openai", "quota_pct": None, "quota_json": quota, "user_info": {}}
             quota["chat_probe"] = "ok:%s" % probe
         return {"status": "active", "status_msg": "" if probe else "模型清单为空,未做对话探活",
-                "member_level": "openai", "quota_pct": None, "quota_json": quota, "user_info": {}}
+                "member_level": "openai", "quota_pct": quota.get("credits_used_pct"),
+                "quota_json": quota, "user_info": {}}
 
     @staticmethod
     def _pick_probe_model(ids):

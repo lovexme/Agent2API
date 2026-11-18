@@ -21,7 +21,7 @@
           <td><span class="badge" :class="a.status === 'active' ? 'ok' : ['expired','error'].includes(a.status) ? 'err' : a.status === 'unknown' ? 'dim' : 'warn'"><span class="dot"></span>{{ statusText(a) }}</span></td>
           <td><span v-if="a.member_level" class="badge blue">{{ a.member_level.toUpperCase() }}</span><span v-else class="muted">—</span></td>
           <td class="quota-cell"><div class="quota-line"><span>{{ quotaText(a) }}</span><span v-if="sessionDays(a) !== null" class="acct-meta">剩 {{ sessionDays(a) }} 天</span></div><div class="bar" :class="barClass(a)"><i :style="barStyle(a)"></i></div><div class="acct-meta">{{ resetText(a) }}</div></td>
-          <td><span class="acct-meta">{{ sessionDays(a) !== null ? `${sessionDays(a)} 天` : '—' }}</span></td><td class="r num">{{ a.request_count ?? a.requests ?? '—' }}</td>
+          <td><span class="acct-meta">{{ sessionDays(a) !== null ? `${sessionDays(a)} 天` : (isWb(a) && (a.quota_json || {}).credits_earliest_expiry ? (a.quota_json || {}).credits_earliest_expiry.slice(0, 10) : '—') }}</span></td><td class="r num">{{ a.request_count ?? a.requests ?? '—' }}</td>
           <td><div class="row-actions"><button class="btn ghost sm" :disabled="busy===a.id" @click="doCheck(a)">检测</button><button class="btn ghost sm" @click="showModels(a)">模型</button><button class="btn ghost sm" @click="openEdit(a)">编辑</button><button class="btn ghost sm danger" @click="doDelete(a)">删除</button></div></td>
         </tr>
         <tr v-if="!items.length && !loading"><td colspan="9"><div class="empty"><strong>还没有账号</strong><span>新增账号并填写凭据后，即可在此查看状态与额度。</span><button class="btn primary" @click="openCreate">＋ 新增账号</button></div></td></tr>
@@ -393,6 +393,7 @@ const logoText = (key) => (key.startsWith('tabbit') ? 'TB' : key === 'loomy' ? '
 const shortId = (a) => (a.user_info && (a.user_info.id || a.user_info.user_id) ? String(a.user_info.id || a.user_info.user_id).slice(0, 8) : '')
 
 const isLoomy = (a) => !!(a.quota_json && a.quota_json.loomy)
+const isWb = (a) => !!(a.quota_json && a.quota_json.openai_compat && a.quota_json.credits != null)
 
 const currentPlatform = computed(() => platforms.value.find((p) => p.id === dialog.value.platform_id))
 const credentialPlaceholder = computed(() => {
@@ -408,14 +409,33 @@ const credentialHint = computed(() => {
   return '凭据仅存储在本机数据库，勿在公共设备使用。'
 })
 
+function wbBarPct(a) {
+  const qj = a.quota_json || {}
+  if (!(qj.credits_total > 0)) return null
+  const used = (qj.credits_total - qj.credits) / qj.credits_total * 100
+  return Math.max(0, Math.min(100, Math.round(used)))
+}
 function barClass(a) {
   if (isLoomy(a)) return 'na'
-  if (a.status !== 'active' || a.quota_pct == null) return 'na'
+  if (a.status !== 'active' || a.quota_pct == null) {
+    if (isWb(a) && wbBarPct(a) != null) {
+      const u = wbBarPct(a)
+      return u < 50 ? '' : u <= 80 ? 'mid' : 'high'
+    }
+    return 'na'
+  }
   if (a.quota_pct < 50) return ''
   if (a.quota_pct <= 80) return 'mid'
   return 'high'
 }
-const barStyle = (a) => (isLoomy(a) || a.status !== 'active' || a.quota_pct == null ? {} : { width: Math.min(a.quota_pct, 100) + '%' })
+const barStyle = (a) => {
+  if (isLoomy(a)) return {}
+  if (a.quota_pct == null) {
+    if (isWb(a) && wbBarPct(a) != null) return { width: wbBarPct(a) + '%' }
+    return {}
+  }
+  return { width: Math.min(a.quota_pct, 100) + '%' }
+}
 function sessionDays(a) {
   const exp = (a.user_info || {}).session_expire_at
   if (!exp) return null
@@ -432,12 +452,21 @@ function sessionLeftClass(a) {
 function quotaText(a) {
   const qj = a.quota_json || {}
   if (isLoomy(a)) return (qj.available_balance != null ? qj.available_balance : '—') + ' 积分可用'
+  if (isWb(a)) {
+    const used = qj.credits != null && qj.credits_total > 0 ? `${qj.credits} / ${qj.credits_total} 积分` : `${qj.credits ?? '—'} 积分`
+    return used
+  }
   if (a.quota_pct == null) return '—'
   return a.status === 'active' ? a.quota_pct + '%' : a.quota_pct + '%（上次）'
 }
 function resetText(a) {
   const qj = a.quota_json || {}
   if (isLoomy(a)) return `永久 ${qj.balance ?? 0} · 每日赠送 ${qj.daily_balance ?? 0}`
+  if (isWb(a)) {
+    if (qj.credits_earliest_expiry) return `${qj.credits_earliest_remaining != null ? qj.credits_earliest_remaining + ' 积分' : '部分积分'} ${qj.credits_earliest_expiry.slice(0, 10)} 到期`
+    if (a.status === 'active') return '积分按平台周期刷新'
+    return '数据为上次检测结果'
+  }
   if (qj.remaining_reset_hours != null) return `${Math.round(+qj.remaining_reset_hours)} 小时后重置额度`
   if (qj.current_cycle_end) return `额度周期至 ${qj.current_cycle_end}`
   if (a.status === 'active') return '额度周期未知'
@@ -461,12 +490,26 @@ async function batchCheck() {
   const targets = items.value.filter((a) => selected.value.includes(a.id))
   if (!targets.length) return
   batchBusy.value = true
-  let done = 0
+  const stat = { active: 0, expired: 0, error: 0, unknown: 0 }
+  const badList = []
+  let failed = 0
   for (const a of targets) {
-    try { await checkAccount(a.id); done += 1 } catch { /* 单个失败不打断批量 */ }
+    try {
+      const r = await checkAccount(a.id)
+      const d = r?.data || {}
+      const k = stat[d.status] != null ? d.status : 'unknown'
+      stat[k] += 1
+      if (k !== 'active') badList.push(`${a.name}(${STATUS_MAP[k]?.text || k}${d.status_msg ? ':' + d.status_msg : ''})`)
+    } catch {
+      failed += 1
+      stat.error += 1
+      badList.push(`${a.name}(请求失败)`)
+    }
   }
   batchBusy.value = false
-  toastOk(`批量检测完成:成功 ${done}/${targets.length}`)
+  const head = `批量检测 ${targets.length} 个:有效 ${stat.active} / 过期 ${stat.expired} / 异常 ${stat.error} / 未检查 ${stat.unknown}`
+  if (stat.active === targets.length) toastOk(head)
+  else toastErr(head + (badList.length ? `\n异常: ${badList.slice(0, 5).join('、')}${badList.length > 5 ? ` 等 ${badList.length} 个` : ''}` : ''))
   await reload()
 }
 async function batchDelete() {
@@ -557,11 +600,42 @@ async function save() {
   }
 }
 
+
+function checkSummary(r) {
+  const d = r?.data || r || {}
+  const st = STATUS_MAP[d.status]?.text || '未知'
+  const bits = []
+  const qj = d.quota_json || {}
+  const ui = d.user_info || {}
+  if (isLoomy({ quota_json: qj })) {
+    const bal = qj.available_balance != null ? qj.available_balance : (qj.balance ?? '—')
+    bits.push(`积分 ${bal}${qj.daily_balance ? '（每日赠送 ' + qj.daily_balance + '）' : ''}`)
+  } else if (qj.openai_compat && qj.credits != null) {
+    bits.push(`积分 ${qj.credits}${qj.credits_total ? ' / ' + qj.credits_total : ''}`)
+    if (qj.credits_earliest_expiry) bits.push(`${qj.credits_earliest_remaining != null ? qj.credits_earliest_remaining + ' 积分' : '部分积分'} ${qj.credits_earliest_expiry.slice(0, 10)} 到期`)
+  } else if (d.quota_pct != null) {
+    bits.push(`额度已用 ${d.quota_pct}%`)
+  }
+  if (d.member_level) bits.push(`会员 ${d.member_level}`)
+  if (ui.session_expire_at) {
+    const days = Math.ceil((new Date(String(ui.session_expire_at).replace(' ', 'T')) - Date.now()) / 86400000)
+    bits.push(`会话剩 ${days} 天`)
+  } else if (qj.current_cycle_end) {
+    bits.push(`周期至 ${qj.current_cycle_end}`)
+  } else if (qj.remaining_reset_hours != null) {
+    bits.push(`${Math.round(+qj.remaining_reset_hours)} 小时后重置`)
+  }
+  const extra = d.status_msg ? `（${d.status_msg}）` : ''
+  return `${st}${extra}${bits.length ? ' · ' + bits.join(' · ') : ''}`
+}
 async function doCheck(a) {
   busy.value = a.id
   try {
-    await checkAccount(a.id)
-    toastOk(`「${a.name}」检测完成`)
+    const r = await checkAccount(a.id)
+    const d = r?.data || {}
+    const msg = `「${a.name}」${checkSummary(r)}`
+    if (d.status === 'active') toastOk(msg)
+    else toastErr(msg)
     await reload()
   } catch (e) {
     toastErr('检测失败：' + (e.response?.data?.detail || e.message))
