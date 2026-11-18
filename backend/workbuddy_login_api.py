@@ -1,4 +1,10 @@
-"""WorkBuddy OAuth 授权并自动导入 AAM 账号。"""
+"""WorkBuddy OAuth 授权并自动导入 AAM 账号。
+
+授权流程转发给 wb2api 网关（/panel/api/login/start + poll）：
+- wb2api 负责与腾讯 CodeBuddy 完成 OAuth、凭证落盘 auths/、热加载进账号池
+- AAM 侧拿到 done 后建账号，credential 存「wb2api 网关 api_key」（openai_compat 探活 7863 用它）
+- 后端直连腾讯的旧实现会拿到 accessToken 却无法通过 7863 探活（7863 只认自己 api_key）→ 账号恒 expired
+"""
 import json
 import re
 import time
@@ -13,10 +19,9 @@ from .auth import require_admin
 from .config import DATA_DIR
 
 router = APIRouter(prefix="/api/login/workbuddy", dependencies=[Depends(require_admin)])
-UPSTREAM = "https://copilot.tencent.com"
-ORIGIN = "https://www.codebuddy.cn"
-UA = "CLI/2.63.2 CodeBuddy/2.63.2"
+_UUID_RE = re.compile(r"^[A-Za-z0-9-]{8,128}$")
 STATE_FILE = DATA_DIR / "workbuddy_oauth_states.json"
+
 _REDACT_KEYS = {
     "credential", "refreshToken", "accessToken", "access_token", "refresh_token",
     "api_key", "apiKey", "id_token", "client_secret", "password", "authorization",
@@ -41,7 +46,34 @@ def _redact(item):
     return item
 
 
-TTL = 900
+def _gw_url() -> str:
+    """wb2api 网关地址：优先 settings.workbuddy_gw_url；回退 workbuddy 平台 base_url 去掉 /v1。"""
+    url = (db.get_setting("workbuddy_gw_url", "") or "").strip()
+    if url:
+        return url.rstrip("/")
+    with db.connect() as conn:
+        row = conn.execute("SELECT base_url FROM platforms WHERE key='workbuddy'").fetchone()
+    base = (row["base_url"] if row else "") or ""
+    base = base.strip().rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base.rstrip("/") if base else "http://127.0.0.1:7863"
+
+
+def _gw_key() -> str:
+    """wb2api 网关 api_key：优先 settings.workbuddy_gw_key；回退任一 workbuddy 账号的 credential。
+    credential 为空/无账号时抛错，提示到「设置」页配置。"""
+    key = (db.get_setting("workbuddy_gw_key", "") or "").strip()
+    if key:
+        return key
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT a.credential FROM accounts a JOIN platforms p ON p.id=a.platform_id "
+            "WHERE p.key='workbuddy' AND a.credential IS NOT NULL AND TRIM(a.credential)<>'' "
+            "ORDER BY a.id LIMIT 1").fetchone()
+    if row and row["credential"]:
+        return row["credential"]
+    raise HTTPException(400, "未配置 WorkBuddy 网关 API Key：请到「设置」页填写 workbuddy 网关地址与 API Key")
 
 
 def _states():
@@ -61,65 +93,48 @@ def _save_states(states):
 
 @contextmanager
 def _states_lock(timeout: float = 5.0):
-    """跨进程文件锁：读改写 workbuddy_oauth_states.json 时互斥。
-
-    非阻塞尝试 + 超时：避免持锁请求异常时其它请求无限阻塞（会表现为面板"打不开"）。
-    """
-    import fcntl
-    lock_path = Path(str(STATE_FILE) + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + timeout
-    with open(lock_path, "a+") as lf:
-        while True:
-            try:
-                fcntl.flock(lf, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise TimeoutError(f"file lock timeout: {lock_path}")
-                time.sleep(0.05)
-        try:
+    import contextlib
+    with contextlib.suppress(ImportError):
+        from filelock import FileLock
+        lock = FileLock(str(STATE_FILE) + ".lock", timeout=timeout)
+        with lock:
             yield
-        finally:
-            fcntl.flock(lf, fcntl.LOCK_UN)
+        return
+    yield
 
 
-def _headers(token=""):
-    headers = {"Content-Type": "application/json", "Accept": "application/json, text/plain, */*",
-               "X-Requested-With": "XMLHttpRequest", "Origin": ORIGIN,
-               "Referer": ORIGIN + "/", "User-Agent": UA}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return headers
-
-
-async def _upstream(method, url, token="", body=None):
-    async with httpx.AsyncClient(timeout=15) as client:
-        response = await client.request(method, url, headers=_headers(token), json=body)
+async def _upstream(method, url, key="", body=None):
+    headers = {"Accept": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.request(method, url, headers=headers, json=body)
     if response.status_code >= 300:
-        raise HTTPException(502, f"WorkBuddy 上游返回 HTTP {response.status_code}")
+        raise HTTPException(502, f"WorkBuddy 网关返回 HTTP {response.status_code}: {response.text[:200]}")
     try:
         payload = response.json()
     except ValueError:
-        raise HTTPException(502, "WorkBuddy 上游返回无法解析的数据")
-    if not isinstance(payload, dict) or payload.get("code") != 0:
-        return None
-    return payload.get("data") or {}
+        raise HTTPException(502, "WorkBuddy 网关返回无法解析的数据")
+    return payload
 
 
 @router.post("/start")
-async def start():
-    data = await _upstream("POST", f"{UPSTREAM}/v2/plugin/auth/state?platform=CLI", body={})
-    state = str((data or {}).get("state") or "")
-    url = str((data or {}).get("authUrl") or "")
-    if not state or not url or not re.fullmatch(r"[A-Za-z0-9-]{8,128}", state):
-        raise HTTPException(502, "WorkBuddy 未返回有效授权状态")
+async def start(realm: str = Query("cn")):
+    url = _gw_url()
+    key = _gw_key()
+    payload = await _upstream("POST", f"{url}/panel/api/login/start", key=key, body={"realm": realm})
+    state = str(payload.get("state") or "")
+    auth_url = str(payload.get("url") or "")
+    if not state or not _UUID_RE.match(state) or not auth_url:
+        raise HTTPException(502, "WorkBuddy 网关未返回有效授权状态")
     now = int(time.time())
     with _states_lock():
         states = {k: v for k, v in _states().items() if int(v.get("expires_at", 0)) > now}
-        states[state] = {"created_at": now, "expires_at": now + TTL, "account_id": None}
+        states[state] = {"created_at": now, "expires_at": now + 900, "account_id": None}
         _save_states(states)
-    return {"ok": True, "state": state, "url": url, "expires_at": now + TTL}
+    return {"ok": True, "state": state, "url": auth_url, "expires_at": now + 900}
 
 
 @router.get("/status")
@@ -137,40 +152,46 @@ async def status(state: str = Query(..., min_length=8, max_length=128)):
             account["user_info"] = db.parse_json(account.get("user_info"))
         return _redact({"ok": True, "status": "done", "account": account})
 
-    token_data = await _upstream("GET", f"{UPSTREAM}/v2/plugin/auth/token?state={state}")
-    access_token = str((token_data or {}).get("accessToken") or "")
-    if not access_token:
+    url = _gw_url()
+    key = _gw_key()
+    payload = await _upstream("GET", f"{url}/panel/api/login/poll?state={state}", key=key)
+    done = bool(payload.get("done"))
+    if not done:
         return {"ok": True, "status": "pending"}
-    account_data = await _upstream("GET", f"{UPSTREAM}/v2/plugin/login/account?state={state}", token=access_token)
-    account_data = account_data or {}
-    uid = str(account_data.get("uid") or "")
+    # wb2api 已完成 OAuth 并热加载入池；AAM 侧建账号，credential=网关 api_key（探活用）
+    uid = str(payload.get("uid") or "")
+    nickname = str(payload.get("nickname") or "")
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", uid):
-        raise HTTPException(502, "WorkBuddy 已授权，但未返回有效账号 ID")
-    nickname = str(account_data.get("nickname") or "")
-    user_info = {"uid": uid, "nickname": nickname,
-                 "enterpriseId": account_data.get("enterpriseId", ""),
-                 "refreshToken": token_data.get("refreshToken", ""),
-                 "expiresIn": token_data.get("expiresIn", 0),
-                 "domain": token_data.get("domain", "")}
+        raise HTTPException(502, "WorkBuddy 网关已授权，但未返回有效账号 ID")
+    credits = payload.get("credits")
+    credits_total = payload.get("credits_total")
+    realm2 = payload.get("realm", "")
+    user_info = {"uid": uid, "nickname": nickname, "credits": credits,
+                 "credits_total": credits_total, "realm": realm2,
+                 "source": "wb2api-oauth"}
     with db.connect() as conn:
         row = conn.execute("SELECT id FROM platforms WHERE key='workbuddy'").fetchone()
         if not row:
             raise HTTPException(500, "缺少 key=workbuddy 的平台记录,请先在「平台」页创建(adapter=openai_compat)")
         platform_id = row["id"]
-        existing = conn.execute("SELECT id FROM accounts WHERE platform_id=? AND json_extract(user_info, '$.uid')=?", (platform_id, uid)).fetchone()
+        existing = conn.execute(
+            "SELECT id FROM accounts WHERE platform_id=? AND json_extract(user_info, '$.uid')=?",
+            (platform_id, uid)).fetchone()
         if existing:
             account_id = existing["id"]
             conn.execute("UPDATE accounts SET name=?,credential=?,credential_type='token',user_info=? WHERE id=?",
-                         (f"WorkBuddy-{uid[-4:]}", access_token, json.dumps(user_info, ensure_ascii=False), account_id))
+                         (f"WorkBuddy-{uid[-4:]}", key, json.dumps(user_info, ensure_ascii=False), account_id))
         else:
-            cur = conn.execute("INSERT INTO accounts(platform_id,name,credential,credential_type,user_info) VALUES(?,?,?,?,?)",
-                               (platform_id, f"WorkBuddy-{uid[-4:]}", access_token, "token", json.dumps(user_info, ensure_ascii=False)))
+            cur = conn.execute(
+                "INSERT INTO accounts(platform_id,name,credential,credential_type,user_info) VALUES(?,?,?,?,?)",
+                (platform_id, f"WorkBuddy-{uid[-4:]}", key, "token",
+                 json.dumps(user_info, ensure_ascii=False)))
             account_id = cur.lastrowid
     with _states_lock():
-        states = _states()
-        if state in states:
-            states[state]["account_id"] = account_id
-            _save_states(states)
+        if state in _states():
+            st = _states()
+            st[state]["account_id"] = account_id
+            _save_states(st)
     from .api import check_account
     account = await check_account(account_id)
     return _redact({"ok": True, "status": "done", "account": account})

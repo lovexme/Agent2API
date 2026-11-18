@@ -79,6 +79,12 @@ sudo systemctl enable --now aam-panel
 - **切换平台会清空已填内容**，需要为当前平台重新发码（避免 A 平台验证码被拿去 B 平台校验）
 - 新号首次验证码登录通常会自动注册，可直接用于网关调用；`Loomy` 新账号一般带每日赠送额度
 
+### WorkBuddy OAuth 授权
+
+「账号池」→ **WorkBuddy 授权** → 打开生成的腾讯 CodeBuddy 授权链接（微信扫码或手机号登录）→ 授权完成后自动导入账号并探活。
+
+- 授权由 **wb2api 网关**（`/panel/api/login/start` + `poll`）完成：OAuth 凭证落盘到 wb2api 账号池并热加载，AAM 侧账号保存网关 api_key 用于探活与调用，保证状态为 `active` 而非误报「已过期」
+- 网关地址默认从平台 `base_url` 推断（`http://127.0.0.1:7863`），也可在「设置」页显式配置「WorkBuddy 网关地址 / API Key」；API Key 留空则复用已有 WorkBuddy 账号的凭据
 
 ## 统一网关调用
 

@@ -56,6 +56,8 @@ class SettingsInput(BaseModel):
     tool_vision_endpoint: str | None = None
     tool_vision_bridge_script: str | None = None
     account_max_inflight: str | None = None
+    workbuddy_gw_url: str | None = None
+    workbuddy_gw_key: str | None = None
 
 class RefreshInput(BaseModel):
     pass
@@ -397,7 +399,9 @@ def settings():
             "tool_vision_mode":db.get_setting("tool_vision_mode","http"),
             "tool_vision_endpoint":db.get_setting("tool_vision_endpoint",""),
             "tool_vision_bridge_script":db.get_setting("tool_vision_bridge_script",""),
-            "account_max_inflight":db.get_setting("account_max_inflight","1")}
+            "account_max_inflight":db.get_setting("account_max_inflight","1"),
+            "workbuddy_gw_url":db.get_setting("workbuddy_gw_url",""),
+            "workbuddy_gw_key":db.get_setting("workbuddy_gw_key","")}
 
 @router.post("/settings")
 def save_settings(body:SettingsInput):
@@ -417,6 +421,8 @@ def save_settings(body:SettingsInput):
     if body.tool_vision_endpoint is not None: db.set_setting("tool_vision_endpoint",body.tool_vision_endpoint.strip())
     if body.tool_vision_bridge_script is not None: db.set_setting("tool_vision_bridge_script",body.tool_vision_bridge_script.strip())
     if body.account_max_inflight is not None: db.set_setting("account_max_inflight",body.account_max_inflight.strip())
+    if body.workbuddy_gw_url is not None: db.set_setting("workbuddy_gw_url",body.workbuddy_gw_url.strip())
+    if body.workbuddy_gw_key is not None: db.set_setting("workbuddy_gw_key",body.workbuddy_gw_key.strip())
     return settings()
 
 @router.post("/auto-check/run")
