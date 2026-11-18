@@ -69,7 +69,8 @@ async def tabbit_send(request: Request, body: SMSInput):
         data = d.get("data") or {}
         if isinstance(data, dict) and (data.get("verifyUrl") or data.get("requestCode")):
             raise HTTPException(400, "触发 YodaSeed 滑块验证，需在 Tabbit 客户端过验证后重试")
-        return {"ok": True, "msg": f"验证码已发送到 {phone}"}
+        # Tabbit 验证流程不需要 msgid（verify 只用 phone+smsCode），返回空串保持响应结构一致
+        return {"ok": True, "msgid": "", "msg": f"验证码已发送到 {phone}"}
     err = d.get("error") or {}
     raise HTTPException(400, f"发码失败: {err.get('msg') or d.get('message') or json.dumps(d, ensure_ascii=False)[:120]}")
 

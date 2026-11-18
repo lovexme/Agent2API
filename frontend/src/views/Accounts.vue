@@ -150,13 +150,14 @@ async function copyWorkbuddyUrl() {
 
 // ── 手机验证码添加（发短信建号） ──
 const smsPlatforms = computed(() => platforms.value.filter(p => ['loomy', 'tabbit-domestic'].includes(p.key)))
-const sms = ref({ show: false, platform_id: null, phone: '', code: '', msgid: '', msg: '', timer: 0, sending: false, verifying: false, tick: null })
+const sms = ref({ show: false, platform_id: null, phone: '', code: '', msgid: '', sent: false, msg: '', timer: 0, sending: false, verifying: false, tick: null })
 function openSmsLogin() {
   sms.value.show = true
   sms.value.platform_id = smsPlatforms.value[0]?.id || null
   sms.value.phone = ''
   sms.value.code = ''
   sms.value.msgid = ''
+  sms.value.sent = false
   sms.value.msg = ''
 }
 async function smsSend() {
@@ -178,6 +179,7 @@ async function smsSend() {
     const j = await r.json()
     if (j.ok) {
       if (j.msgid) s.msgid = j.msgid
+      s.sent = true
       s.msg = `✅ 验证码已发送到 ${ph}（5 分钟内有效）`
       toastOk('验证码已发送，请看手机')
       startSmsTimer(60)
@@ -209,9 +211,10 @@ function startSmsTimer(sec) {
 async function smsVerify() {
   const s = sms.value
   const ph = s.phone.trim()
-  if (!s.msgid) return toastErr('请先发送验证码')
+  if (!s.sent) return toastErr('请先发送验证码')
   if (!s.code.trim()) return toastErr('请输入验证码')
   const key = smsPlatforms.value.find(p => p.id === s.platform_id)?.key
+  if (key !== 'tabbit-domestic' && !s.msgid) return toastErr('发送接口未返回 msgid，请重新发送验证码')
   s.verifying = true
   s.msg = '验证中…'
   try {

@@ -93,7 +93,9 @@ async def loomy_send(request: Request, phone: str = ""):
         raise HTTPException(429, "发送过于频繁，请稍后再试")
     payload = await _api_post("/login/phone/sendMsgCode", {"ccode": "86", "phone": phone, "expire": 300})
     data = payload.get("data") or {}
-    msgid = data.get("msgid") or data.get("msgId") or payload.get("msgid")
+    msgid = (data.get("msgid") or data.get("msgId") or data.get("msg_id")
+             or data.get("smsId") or data.get("sms_id") or data.get("serialNo")
+             or payload.get("msgid") or payload.get("msgId") or "")
     code = str(payload.get("code", ""))
     ok = code in ("0", "000000") or bool(data.get("success")) or bool(data.get("result")) is True
     return {"ok": ok, "msgid": msgid or ""}
