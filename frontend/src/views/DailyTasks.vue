@@ -72,13 +72,47 @@
         </table>
       </div>
     </div>
+
+    <div class="card task-card wb-card">
+      <div class="card-head">WorkBuddy 每日任务 <span class="muted task-count">{{ wb.loading ? '加载中…' : `${wb.accounts.length} 个账号 · ${wb.gateway || ''}` }}</span>
+        <div class="wb-actions">
+          <button class="btn sm ghost" :disabled="wb.loading || wb.busy" @click="loadWorkbuddy">刷新</button>
+          <button class="btn sm ghost" :disabled="wb.loading || wb.busy" @click="scanWb">扫描任务</button>
+          <button class="btn sm" :disabled="wb.loading || wb.busy" @click="checkinWb">一键签到</button>
+          <button class="btn sm primary" :disabled="wb.loading || wb.busy" @click="runWb">一键跑任务</button>
+        </div>
+      </div>
+      <div class="wb-schedule">
+        <span v-for="(v, k) in wb.schedule" :key="k" class="wb-tag">{{ wbLabel(k) }} {{ v }}</span>
+        <span v-if="wb.queue.running" class="badge warn">队列执行中 {{ wb.queue.total }} 项</span>
+        <span v-else-if="wb.queue.total" class="badge dim">队列 {{ wb.queue.total }} 项待跑</span>
+      </div>
+      <div v-if="wb.error" class="wb-error">{{ wb.error }}</div>
+      <div class="tbl-wrap" v-loading="wb.loading">
+        <table class="tbl">
+          <thead><tr><th>账号</th><th>任务进度</th><th>待领奖励</th><th>积分</th><th>最近成功</th><th class="r">状态</th></tr></thead>
+          <tbody>
+            <tr v-for="a in wb.accounts" :key="a.uid">
+              <td><div class="acct-cell"><span class="avatar">{{ (a.nickname || '?').slice(0,1).toUpperCase() }}</span><div class="acct-copy"><div class="acct-name">{{ a.nickname }}</div><div class="acct-meta">{{ a.uid.slice(0,8) }}</div></div></div></td>
+              <td><span class="mono">{{ a.tasks_done }} / {{ a.tasks_total }}</span><div class="bar wb-bar"><i :style="{ width: a.tasks_total ? Math.round(a.tasks_done / a.tasks_total * 100) + '%' : '0%' }"></i></div></td>
+              <td><span class="badge" :class="a.rewards_pending > 0 ? 'warn' : 'dim'">{{ a.rewards_pending }} 项</span></td>
+              <td><span class="mono">{{ a.credits != null ? a.credits : '—' }}{{ a.credits_total ? ' / ' + a.credits_total : '' }}</span></td>
+              <td><span class="acct-meta">{{ a.last_success || '—' }}</span></td>
+              <td class="r"><span class="badge" :class="a.cooling ? 'err' : 'ok'">{{ a.cooling ? '冷却中' : '正常' }}</span></td>
+            </tr>
+            <tr v-if="!wb.accounts.length && !wb.loading"><td colspan="6"><div class="empty"><strong>{{ wb.error ? 'WorkBuddy 任务加载失败' : '暂无 WorkBuddy 账号' }}</strong><span>{{ wb.error || '请先在账号池授权 WorkBuddy 账号' }}</span></div></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
   </section>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
-import { getSettings, saveSettings } from '../api'
+import { getSettings, saveSettings, getWorkbuddyTasks, scanWorkbuddyTasks, runWorkbuddyTasks, checkinWorkbuddyTasks } from '../api'
 import { toastOk, toastErr } from '../lib/toast'
+import { ElMessageBox } from 'element-plus'
 
 const items = ref([])
 const currentSettings = ref(null)
@@ -90,6 +124,7 @@ const autoCheckEnabled = ref(false)
 const settingsSaving = ref(false)
 const showAccounts = ref(false)
 const history = ref([])
+const wb = ref({ loading: false, busy: false, error: '', gateway: '', accounts: [], queue: { running: false, total: 0, conc: 0 }, schedule: {} })
 
 const tasksDef = [
   { key: 'health', title: '账号健康检测', schedule: '每日 08:00', description: '面板内调度器:检测全部账号状态与积分(双实例自动去重)' },
@@ -203,7 +238,62 @@ async function runTaskCheckin(task = null) {
 }
 function runAll() { return runTaskCheckin() }
 
-onMounted(loadDailyTasks)
+const WB_LABELS = { checkin: '签到', growth: '成长任务', activity: '活跃上报', travel: '猫猫旅行', keepalive: 'token 保活', blackcat: '黑猫任务' }
+const wbLabel = (k) => WB_LABELS[k] || k
+
+async function loadWorkbuddy() {
+  wb.value.loading = true
+  wb.value.error = ''
+  try {
+    const d = await getWorkbuddyTasks()
+    wb.value.gateway = d.gateway || ''
+    wb.value.accounts = Array.isArray(d.accounts) ? d.accounts : []
+    wb.value.queue = d.queue || { running: false, total: 0, conc: 0 }
+    wb.value.schedule = d.schedule || {}
+  } catch (e) {
+    wb.value.accounts = []
+    wb.value.error = e.response?.data?.detail || e.message || '加载失败'
+  } finally { wb.value.loading = false }
+}
+
+async function scanWb() {
+  wb.value.busy = true
+  try {
+    const d = await scanWorkbuddyTasks()
+    toastOk(`任务扫描完成：${d.accounts ?? 0} 个账号`)
+    await loadWorkbuddy()
+    appendHistory('WorkBuddy 成长任务已重新扫描')
+  } catch (e) { toastErr('扫描失败：' + (e.response?.data?.detail || e.message)) }
+  finally { wb.value.busy = false }
+}
+
+async function checkinWb() {
+  const ok = await ElMessageBox.confirm('将对 WorkBuddy 池内所有账号执行真实签到，继续吗？', '一键签到', { confirmButtonText: '签到', cancelButtonText: '取消', type: 'warning' }).catch(() => false)
+  if (!ok) return
+  wb.value.busy = true
+  try {
+    const d = await checkinWorkbuddyTasks()
+    toastOk(d.started ? '签到已触发，稍后刷新查看结果' : '签到请求已提交')
+    appendHistory('WorkBuddy 一键签到已触发')
+    setTimeout(loadWorkbuddy, 6000)
+  } catch (e) { toastErr('签到失败：' + (e.response?.data?.detail || e.message)) }
+  finally { wb.value.busy = false }
+}
+
+async function runWb() {
+  const ok = await ElMessageBox.confirm('将对 WorkBuddy 执行一键任务队列（真实调用上游、消耗少量额度），继续吗？', '一键跑任务', { confirmButtonText: '执行', cancelButtonText: '取消', type: 'warning' }).catch(() => false)
+  if (!ok) return
+  wb.value.busy = true
+  try {
+    const d = await runWorkbuddyTasks()
+    toastOk(`任务队列已启动：${d.total ?? 0} 项`)
+    appendHistory(`WorkBuddy 任务队列启动（${d.total ?? 0} 项）`)
+    setTimeout(loadWorkbuddy, 6000)
+  } catch (e) { toastErr('任务启动失败：' + (e.response?.data?.detail || e.message)) }
+  finally { wb.value.busy = false }
+}
+
+onMounted(() => { loadDailyTasks(); loadWorkbuddy() })
 </script>
 
 <style scoped>
@@ -228,6 +318,13 @@ onMounted(loadDailyTasks)
 .daily-tasks-view .empty.compact { min-height: 54px; }
 .daily-tasks-view .empty strong { color: var(--text); font-size: 13px; }
 .daily-tasks-view button:disabled { cursor: not-allowed; opacity: .55; }
+.daily-tasks-view .wb-card .card-head { gap: 8px; flex-wrap: wrap; }
+.daily-tasks-view .wb-actions { margin-left: auto; display: flex; gap: 6px; flex-wrap: wrap; }
+.daily-tasks-view .wb-schedule { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.daily-tasks-view .wb-tag { font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--surface); border: 1px solid var(--border); color: var(--text-2); }
+.daily-tasks-view .wb-error { padding: 10px 16px; color: var(--err, #e5484d); font-size: 12px; }
+.daily-tasks-view .wb-bar { height: 4px; margin-top: 4px; max-width: 90px; }
+.daily-tasks-view .wb-bar i { display: block; height: 100%; background: var(--accent, #3b82f6); border-radius: 2px; }
 @media (max-width: 767px) {
   .daily-tasks-view .kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
   .daily-tasks-view .kpi { padding: 12px; }

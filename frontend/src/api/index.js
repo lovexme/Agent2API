@@ -43,20 +43,20 @@ export const updateToken = (id, t) => http.put(`/tokens/${id}`, t)
 export const deleteToken = (id) => http.delete(`/tokens/${id}`)
 export const resetToken = (id) => http.post(`/tokens/${id}/reset`)
 
-// ---- 报表 ----
+// ---- 报表（3065 移植） ----
 export const getReport = (params) => http.get('/report/summary', { params })
 
-// ---- 工具服务 ----
+// ---- 工具服务（3065 移植） ----
 export const getServices = () => http.get('/services')
 export const createService = (s) => http.post('/services', s)
 export const updateService = (id, s) => http.put(`/services/${id}`, s)
 export const deleteService = (id) => http.delete(`/services/${id}`)
 export const testService = (id) => http.post(`/services/${id}/test`)
 
-// ---- 网络代理（平台级代理） ----
+// ---- 网络代理（3065 移植，平台级代理） ----
 export const testPlatformProxies = (ids) => http.post('/proxies/test', { platform_ids: ids })
 
-// ---- AI 助手 ----
+// ---- AI 助手（3065 移植） ----
 export const getAssistantSessions = () => http.get('/assistant/sessions')
 export const createAssistantSession = (s) => http.post('/assistant/sessions', s)
 export const renameAssistantSession = (id, s) => http.put(`/assistant/sessions/${id}`, s)
@@ -69,3 +69,7 @@ export const getAssistantModels = () => http.get('/assistant/models')
 export const testAssistantModel = (m) => http.post('/assistant/models/test', m)
 
 export default http
+export const getWorkbuddyTasks = () => http.get('/login/workbuddy/tasks')
+export const scanWorkbuddyTasks = () => http.post('/login/workbuddy/tasks/scan')
+export const runWorkbuddyTasks = () => http.post('/login/workbuddy/tasks/run')
+export const checkinWorkbuddyTasks = () => http.post('/login/workbuddy/tasks/checkin')

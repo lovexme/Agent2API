@@ -195,3 +195,106 @@ async def status(state: str = Query(..., min_length=8, max_length=128)):
     from .api import check_account
     account = await check_account(account_id)
     return _redact({"ok": True, "status": "done", "account": account})
+
+# ---------------- WorkBuddy 每日任务（转发 wb2api 面板任务 API） ----------------
+
+def _task_done(item) -> bool:
+    """判断单个成长任务是否已完成。"""
+    status = str(item.get("accept_status") or "").lower()
+    if status in ("completed", "accepted", "done", "received", "claimed"):
+        return True
+    try:
+        cur, tgt = item.get("current"), item.get("target")
+        if tgt not in (None, 0) and cur is not None and int(cur) >= int(tgt):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return bool(item.get("completed") or item.get("finished"))
+
+
+@router.get("/tasks")
+async def workbuddy_tasks():
+    """WorkBuddy 每日任务与账号池状态（wb2api 侧自动签到/成长/旅行/保活）。"""
+    url, key = _gw_url(), _gw_key()
+    # 1) 扫描各账号成长任务（读操作）
+    scan = await _upstream("POST", f"{url}/panel/api/tasks/scan_all", key=key, body={})
+    # 2) 执行队列状态
+    queue = {}
+    try:
+        queue = await _upstream("GET", f"{url}/panel/api/tasks/queue", key=key)
+    except HTTPException:
+        queue = {}
+    # 3) 账号池概览（积分/最近成功）
+    overview = {}
+    try:
+        overview = await _upstream("GET", f"{url}/panel/api/overview", key=key)
+    except HTTPException:
+        overview = {}
+    ov_map = {}
+    for a in (overview.get("accounts") or []):
+        if isinstance(a, dict) and a.get("uid"):
+            ov_map[str(a["uid"])] = a
+    accounts = []
+    for acc in (scan.get("accounts") or []):
+        if not isinstance(acc, dict):
+            continue
+        uid = str(acc.get("uid") or "")
+        growth = acc.get("growth") if isinstance(acc.get("growth"), list) else []
+        done = sum(1 for x in growth if isinstance(x, dict) and _task_done(x))
+        reward = sum(1 for x in growth if isinstance(x, dict) and x.get("has_reward") and not _task_done(x))
+        ovd = ov_map.get(uid, {})
+        accounts.append({
+            "uid": uid,
+            "nickname": acc.get("nickname") or ovd.get("nickname") or uid[-4:],
+            "tasks_total": len(growth),
+            "tasks_done": done,
+            "rewards_pending": reward,
+            "credits": ovd.get("credits"),
+            "credits_total": ovd.get("credits_total"),
+            "cooling": bool(ovd.get("cooling")),
+            "last_success": str(ovd.get("last_success") or "")[:19],
+        })
+    return {
+        "ok": True,
+        "gateway": url,
+        "pool_total": len(accounts),
+        "accounts": accounts,
+        "queue": {
+            "running": bool(queue.get("running")),
+            "total": queue.get("total") or 0,
+            "conc": queue.get("conc") or 0,
+        },
+        "schedule": {
+            "checkin": "09:00 / 21:00",
+            "growth": "01:00",
+            "activity": "10:00",
+            "travel": "09:00 / 21:00",
+            "keepalive": "22:00",
+            "blackcat": "23:00",
+        },
+    }
+
+
+@router.post("/tasks/scan")
+async def workbuddy_tasks_scan():
+    """重新扫描成长任务（读操作，仅刷新任务列表）。"""
+    url, key = _gw_url(), _gw_key()
+    data = await _upstream("POST", f"{url}/panel/api/tasks/scan_all", key=key, body={})
+    return {"ok": True, "accounts": len(data.get("accounts") or [])}
+
+
+@router.post("/tasks/run")
+async def workbuddy_tasks_run():
+    """触发 wb2api 一键任务队列（有副作用：会真实执行任务）。"""
+    url, key = _gw_url(), _gw_key()
+    data = await _upstream("POST", f"{url}/panel/api/tasks/run_queue", key=key, body={})
+    return {"ok": bool(data.get("ok")), "started": data.get("started"),
+            "total": data.get("total"), "seq": data.get("seq")}
+
+
+@router.post("/tasks/checkin")
+async def workbuddy_tasks_checkin():
+    """触发 wb2api 全账号签到（有副作用：真实签到）。"""
+    url, key = _gw_url(), _gw_key()
+    data = await _upstream("POST", f"{url}/panel/api/checkin_all", key=key, body={})
+    return {"ok": bool(data.get("ok")), "started": data.get("started")}
