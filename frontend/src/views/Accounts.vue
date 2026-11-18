@@ -14,7 +14,7 @@
       </div>
       <div v-if="selected.length" class="batch-bar"><span>已选 <strong>{{ selected.length }}</strong> / {{ items.length }} 个账号</span><button class="btn sm" type="button" :disabled="batchBusy" @click="batchCheck">{{ batchBusy ? '处理中...' : '批量检测' }}</button><button class="btn sm danger" type="button" :disabled="batchBusy" @click="batchDelete">批量删除</button><button class="btn ghost sm" type="button" @click="selected = []">取消选择</button></div>
       <div v-loading="loading" class="tbl-wrap"><table class="tbl"><thead><tr><th class="c"><input type="checkbox" aria-label="选择全部账号" :checked="allSelected" :indeterminate.prop="someSelected" @change="toggleAll" /></th><th>账号</th><th>平台</th><th>状态</th><th>等级</th><th>积分进度</th><th>到期</th><th class="r">请求数</th><th>操作</th></tr></thead><tbody>
-        <tr v-for="a in items" :key="a.id">
+        <tr v-for="a in pageItems" :key="a.id">
           <td class="c"><input type="checkbox" :value="a.id" v-model="selected" :aria-label="`选择 ${a.name}`" /></td>
           <td><div class="acct-cell"><span class="avatar" :class="logoClass(a.platform_key)">{{ logoText(a.platform_key) }}</span><div class="acct-copy"><div class="acct-name" :title="a.name">{{ a.name }}</div><div class="acct-meta">{{ a.platform_name }}{{ a.user_info && a.user_info.secret_mobile ? ` · ${a.user_info.secret_mobile}` : '' }}{{ a.user_info ? ` · ${shortId(a)}` : '' }}</div></div></div></td>
           <td><span class="chip" :class="a.platform_key === 'tabbit-intl' ? 'intl' : 'cn'">{{ a.platform_name }}</span></td>
@@ -26,7 +26,20 @@
         </tr>
         <tr v-if="!items.length && !loading"><td colspan="9"><div class="empty"><strong>还没有账号</strong><span>新增账号并填写凭据后，即可在此查看状态与额度。</span><button class="btn primary" @click="openCreate">＋ 新增账号</button></div></td></tr>
       </tbody></table></div>
-      <div class="table-foot"><span>共 {{ items.length }} 个账号</span><div class="pager"><button class="on">1</button></div></div>
+      <div class="table-foot"><span>共 {{ total }} 个账号</span>
+      <div class="pager">
+        <button :disabled="page <= 1" @click="page--">‹</button>
+        <template v-for="n in pageNumbers" :key="n">
+          <button v-if="n === '…'" class="dim" disabled>…</button>
+          <button v-else :class="{ on: n === page }" @click="page = n">{{ n }}</button>
+        </template>
+        <button :disabled="page >= pageCount" @click="page++">›</button>
+        <span class="pg-size">每页
+          <select class="select" v-model.number="pageSize" style="width:64px;height:26px;font-size:11px;">
+            <option :value="15">15</option><option :value="30">30</option><option :value="50">50</option>
+          </select>
+        </span>
+      </div></div>
     </div>
     <div v-if="dialog.show || models.show || dailyTasks.show || traeLogin.show || workbuddy.show || sms.show" class="mask open" @click.self="dialog.show = false; models.show = false; dailyTasks.show = false; workbuddy.show = false; traeLogin.show = false; sms.show = false; closeTraeLogin(); stopWorkbuddyPolling()"></div>
     <section v-if="dialog.show" class="modal open" role="dialog" aria-modal="true"><header class="modal-head">{{ dialog.mode === 'create' ? '新增账号' : '编辑账号' }}</header><div class="modal-body"><div class="tabs"><button type="button" :class="{ on: dialog.tab !== 'help' }" @click="dialog.tab = 'cred'">账号凭据</button><button type="button" :class="{ on: dialog.tab === 'help' }" @click="dialog.tab = 'help'">凭据说明</button></div><template v-if="dialog.tab !== 'help'"><div class="field"><label>所属平台</label><select class="select" v-model="dialog.platform_id" :disabled="dialog.mode === 'edit'"><option v-for="p in platforms" :key="p.id" :value="p.id">{{ p.name }}（{{ p.key }}）</option></select></div><div class="field"><label>备注名</label><input class="input" v-model="dialog.name" placeholder="如：国内主号" /></div><div class="field"><label>凭据输入方式</label><div class="seg credential-tabs"><button v-for="mode in credentialModesFor" :key="mode.id" type="button" :class="{ on: dialog.credentialMode === mode.id }" @click="dialog.credentialMode = mode.id">{{ mode.label }}</button></div><div class="hint" style="margin-top:-2px">已按当前平台自动限定可用方式</div></div><div class="field credential-field"><label>凭据内容</label><textarea v-if="dialog.credentialMode === 'cookie' || dialog.credentialMode === 'json'" class="input textarea" v-model="dialog.credential" rows="5" :placeholder="dialog.credentialMode === 'json' ? '粘贴完整 JSON 凭据' : credentialPlaceholder"></textarea><input v-else-if="dialog.credentialMode === 'token'" class="input" v-model="dialog.credential" type="password" autocomplete="off" placeholder="粘贴 Access Token / API Key / Session Token" /><div v-else class="browser-guide"><strong>浏览器登录引导</strong><p>登录完成后复制会话凭据，并切换到 Cookie 或 Token 方式提交。</p></div><span class="hint">{{ credentialHint }}</span></div></template><div v-else class="cred-help"><strong>{{ credHelp.title }}</strong><ol><li v-for="(step, i) in credHelp.steps" :key="i">{{ step }}</li></ol><p class="hint">{{ credHelp.hint }}</p><p class="hint">提交后面板会立即对账号做一次真实检测,状态与积分以检测结果为准。</p></div></div><footer class="modal-foot"><button class="btn" @click="dialog.show = false">取消</button><button class="btn primary" :disabled="saving" @click="save">{{ saving ? '保存并检测中…' : '保存并自动检测' }}</button></footer></section>
@@ -46,6 +59,20 @@ import { toastOk, toastErr } from '../lib/toast'
 import { copyText } from '../lib/clipboard'
 
 const items = ref([])
+const page = ref(1)
+const pageSize = ref(15)
+const filteredItems = computed(() => items.value)
+const total = computed(() => items.value.length)
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
+const pageItems = computed(() => filteredItems.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
+function pageNumbers() {
+  const c = pageCount.value, cur = page.value, out = []
+  for (let i = 1; i <= c; i++) {
+    if (i === 1 || i === c || Math.abs(i - cur) <= 1) out.push(i)
+    else if (out[out.length - 1] !== '…') out.push('…')
+  }
+  return out
+}
 const platforms = ref([])
 const loading = ref(false)
 const busy = ref(null)
@@ -542,6 +569,8 @@ async function reload() {
       list = list.filter((a) => (a.name + (a.platform_name || '') + (a.user_info?.secret_mobile || '') + (a.user_info?.id || '')).toLowerCase().includes(s))
     }
     items.value = list
+    const last = pageCount.value
+    if (page.value > last) page.value = last
     selected.value = selected.value.filter((id) => list.some((a) => a.id === id))
   } catch (e) {
     toastErr('加载账号失败：' + (e.response?.data?.detail || e.message))

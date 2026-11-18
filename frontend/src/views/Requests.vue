@@ -33,7 +33,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="item in filteredLogs" :key="item.id">
+            <tr v-for="item in pageLogs" :key="item.id">
               <td class="mono muted time-cell" :title="item.created_at || ''">{{ item.created_at || '—' }}</td>
               <td class="mono model-cell">
                 <span class="model-main">{{ modelLabel(item) }}</span>
@@ -52,6 +52,22 @@
           </tbody>
         </table>
       </div>
+      <div v-if="filteredLogs.length" class="table-foot">
+        <span>共 {{ filteredLogs.length }} 条<template v-if="filteredLogs.length !== logs.length">（全部 {{ logs.length }} 条中筛选）</template></span>
+        <div class="pager">
+          <button :disabled="page <= 1" @click="page--">‹</button>
+          <template v-for="n in pageNumbers" :key="n">
+            <button v-if="n === '…'" class="dim" disabled>…</button>
+            <button v-else :class="{ on: n === page }" @click="page = n">{{ n }}</button>
+          </template>
+          <button :disabled="page >= pageCount" @click="page++">›</button>
+          <span class="pg-size">每页
+            <select class="select" v-model.number="pageSize" style="width:64px;height:26px;font-size:11px;">
+              <option :value="50">50</option><option :value="100">100</option><option :value="200">200</option>
+            </select>
+          </span>
+        </div>
+      </div>
       <div v-else class="card-body empty-state">
         <strong>{{ loading ? '正在加载请求日志…' : error ? '请求日志暂不可用' : '暂无请求日志' }}</strong>
         <span v-if="!loading && !error && logs.length">没有符合当前筛选条件的记录</span>
@@ -66,7 +82,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { getLogs, getAccounts } from '../api'
 import { toastOk, toastErr } from '../lib/toast'
 
@@ -77,6 +93,18 @@ const statusFilter = ref('all')
 const query = ref('')
 const error = ref('')
 
+const page = ref(1)
+const pageSize = ref(50)
+const pageCount = computed(() => Math.max(1, Math.ceil(filteredLogs.value.length / pageSize.value)))
+const pageLogs = computed(() => filteredLogs.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value))
+const pageNumbers = computed(() => {
+  const c = pageCount.value, cur = page.value, out = []
+  for (let i = 1; i <= c; i++) {
+    if (i === 1 || i === c || Math.abs(i - cur) <= 1) out.push(i)
+    else if (out[out.length - 1] !== '…') out.push('…')
+  }
+  return out
+})
 const filteredLogs = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase()
   return logs.value.filter((item) => {
@@ -87,6 +115,7 @@ const filteredLogs = computed(() => {
     return statusMatch && searchMatch
   })
 })
+watch([statusFilter, query], () => { page.value = 1 })
 const successCount = computed(() => logs.value.filter((item) => Boolean(item.ok)).length)
 const failureCount = computed(() => logs.value.length - successCount.value)
 
@@ -135,6 +164,7 @@ async function load() {
     const r = logsRes.value
     if (!r?.ok) throw new Error('接口未能返回请求日志')
     logs.value = Array.isArray(r.items) ? r.items : []
+    if (page.value > pageCount.value) page.value = pageCount.value
     if (acctRes.status === 'fulfilled' && acctRes.value?.ok && Array.isArray(acctRes.value.items)) {
       accountMap.value = new Map(acctRes.value.items.map((a) => [a.id, a.name]))
     } else {
