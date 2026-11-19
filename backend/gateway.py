@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 import json
 import logging
@@ -16,7 +17,7 @@ from .platforms import ADAPTERS
 
 router=APIRouter(prefix="/v1")
 logger = logging.getLogger(__name__)
-MODEL_CACHE_TTL = 60
+MODEL_CACHE_TTL = 600
 RATE_LIMIT_WINDOW = 60
 RATE_LIMIT_MAX = 120
 _model_cache = {}
@@ -109,8 +110,9 @@ async def resolve(model):
     return None
 
 async def collect_models(scope=None):
-    """聚合全部已注册适配器对外声称的模型(与 /v1/models 同口径);scope=平台 key 时只返回该平台。"""
-    data=[]
+    """聚合全部已注册适配器对外声称的模型(与 /v1/models 同口径);scope=平台 key 时只返回该平台。
+    优化：平台间并发、每平台只拉第一个启用账号（同平台模型列表一致），避免 N 个账号串行过代理拖慢 /v1/models。
+    """
     sql="SELECT DISTINCT p.* FROM platforms p JOIN accounts a ON a.platform_id=p.id WHERE p.enabled=1 AND a.enabled=1 AND a.status='active'"
     args=[]
     if scope:
@@ -118,12 +120,24 @@ async def collect_models(scope=None):
         args.append(scope)
     with db.connect() as conn:
         platforms=[dict(r) for r in conn.execute(sql+" ORDER BY p.id",args)]
-    for p in platforms:
-        if p["adapter"] not in ADAPTERS: continue
-        for account in accounts_for(p["id"]):
-            try: names=await cached_models(adapter_for(p),p,account)
-            except Exception: continue
-            data.extend({"id":f"{p['key']}/{name}","object":"model","owned_by":p["key"]} for name in names)
+
+    async def _one(p):
+        if p["adapter"] not in ADAPTERS:
+            return []
+        accts=accounts_for(p["id"])
+        if not accts:
+            return []
+        try:
+            names=await cached_models(adapter_for(p),p,accts[0])
+            return [{"id":f"{p['key']}/{name}","object":"model","owned_by":p["key"]} for name in names]
+        except Exception:
+            return []
+
+    results=await asyncio.gather(*[_one(p) for p in platforms], return_exceptions=True)
+    data=[]
+    for r in results:
+        if isinstance(r,list):
+            data.extend(r)
     return list({item["id"]:item for item in data}.values())
 
 @router.get("/models")

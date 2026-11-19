@@ -692,7 +692,8 @@ async def test_proxies(body: dict | None = None):
             rows = conn.execute("SELECT * FROM platforms WHERE proxy!='' AND proxy_enabled=1").fetchall()
     target = db.get_setting("proxy_test_url", "").strip()
     if not target:
-        target = "http://127.0.0.1:8710/v1/models"
+        # 默认测外网（代理出口可达性），不要测 127.0.0.1——socks5h 会把回环域名交给远端解析导致 Host unreachable
+        target = "https://api.ipify.org?format=json"
     results = []
     for p in rows:
         proxy = (p["proxy"] or "").strip()

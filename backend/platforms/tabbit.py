@@ -75,7 +75,7 @@ class TabbitAdapter(PlatformAdapter):
         if cached and cached[1]>time.monotonic(): return cached[0]
         response=await self._request(account,"GET","/proxy/v1/model_config/models?a=0&scene=chat")
         names=[item.get("display_name") for item in response.json().get("models",[]) if item.get("display_name")]
-        self._models[account["id"]]=(names,time.monotonic()+60); return names
+        self._models[account["id"]]=(names,time.monotonic()+600); return names
     async def _session_id(self, account):
             cached = self._sessions.get(account["id"])
             if cached and cached[1] > time.monotonic(): return cached[0]
