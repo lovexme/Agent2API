@@ -178,13 +178,30 @@ class LoomyAdapter(PlatformAdapter):
                     if isinstance(chunk, dict) and chunk.get("error"):
                         yield json.dumps({"type": "error", "data": {"message": str(chunk["error"].get("message") or chunk["error"])}}, ensure_ascii=False)
                         continue
+                    tc_head = None
                     try:
                         delta = chunk["choices"][0]["delta"]
                         content = delta.get("content") or ""
+                        tc = delta.get("tool_calls")
+                        if tc:
+                            for i, t in enumerate(tc):
+                                # 网关契约: data={index,id,type,function:{name,arguments}}
+                                fn = t.get("function") or {}
+                                yield json.dumps({"type": "tool_call_chunk",
+                                                  "data": {"index": t.get("index", i),
+                                                           "id": t.get("id"),
+                                                           "type": t.get("type") or "function",
+                                                           "function": {"name": fn.get("name") or "",
+                                                                        "arguments": fn.get("arguments") or ""}}},
+                                                  ensure_ascii=False)
+                        finish = chunk["choices"][0].get("finish_reason")
                     except (KeyError, IndexError, TypeError):
                         content = ""
+                        finish = None
                     if content:
                         content = self._strip_dsml(content)
                         if not content:
                             continue
                         yield json.dumps({"type": "message_chunk", "data": {"content": content}}, ensure_ascii=False)
+                    if finish:
+                        yield json.dumps({"type": "finish_reason", "data": {"finish_reason": finish}}, ensure_ascii=False)
