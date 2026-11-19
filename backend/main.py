@@ -13,6 +13,7 @@ from .tabbit_login_api import router as tabbit_login_router
 from .tabbit_login_api import _public as tabbit_public_router
 from .workbuddy_login_api import router as workbuddy_login_router
 from .assistant_api import router as assistant_router
+from .bypass_api import router as bypass_router
 
 
 @asynccontextmanager
@@ -52,6 +53,7 @@ app.include_router(tabbit_login_router)  # /api/login/tabbit/* (发短信添加�
 app.include_router(tabbit_public_router)  # /api/login/tabbit/google-callback (手机端 Google 回调, 一次性token)
 app.include_router(workbuddy_login_router)  # /api/login/workbuddy/* (OAuth 授权)
 app.include_router(assistant_router)  # /api/assistant/* (AI 助手，3065 移植)
+app.include_router(bypass_router)    # /api/tools/* (auto_bypass 拒答绕过)
 
 static = Path(__file__).resolve().parent / "static"
 if static.exists():

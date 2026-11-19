@@ -104,10 +104,15 @@ class LoomyAdapter(PlatformAdapter):
             items = items.get("data") or []
         return [m.get("id") for m in items if isinstance(m, dict) and m.get("id")]
 
+    supports_tools = True  # 上游 OpenAI 兼容，透传 tools；另带 DSML 泄漏清洗
+
     async def complete(self, account, model, messages, stream=False, temperature=None, tools=None, tool_choice=None):
         body = {"model": model, "messages": messages, "stream": bool(stream)}
         if temperature is not None:
             body["temperature"] = temperature
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = tool_choice if tool_choice is not None else "auto"
         if stream:
             return self._stream(account, body)
         async with self._client() as c:
@@ -117,9 +122,31 @@ class LoomyAdapter(PlatformAdapter):
         r.raise_for_status()
         payload = r.json()
         try:
-            return payload["choices"][0]["message"].get("content") or ""
+            msg = payload["choices"][0]["message"]
         except (KeyError, IndexError, TypeError):
             raise RuntimeError("Loomy 上游响应异常: %s" % json.dumps(payload, ensure_ascii=False)[:200])
+        content = msg.get("content") or ""
+        # DSML 泄漏清洗：上游未接工具解析时，DeepSeek 系会把内部工具调用标记当正文吐出。
+        # 检测到标记时优先取结构化 tool_calls；都没有则剥离标记段只留正文。
+        if "<｜DSML｜" in content or "\uff1c\uff5cDSML\uff5c" in content:
+            tcs = msg.get("tool_calls")
+            if tcs:
+                return {"role": "assistant", "content": None, "tool_calls": tcs}
+            content = self._strip_dsml(content)
+        if tools:
+            return {"role": "assistant", "content": content, "tool_calls": msg.get("tool_calls")}
+        return content
+
+    @staticmethod
+    def _strip_dsml(text: str) -> str:
+        """剥离泄漏的 <｜DSML｜ ...> 调用块（含 calls/invoke/parameter 三种行）。"""
+        out_lines = []
+        for line in text.splitlines():
+            s = line.strip()
+            if s.startswith("<｜DSML｜") or s.startswith("</｜DSML｜") or "\uff1c\uff5cDSML\uff5c" in s:
+                continue
+            out_lines.append(line)
+        return "\n".join(out_lines).strip()
 
     async def _stream(self, account, body):
         """上游 OpenAI SSE → AAM {type, data} 事件流。"""
@@ -157,4 +184,7 @@ class LoomyAdapter(PlatformAdapter):
                     except (KeyError, IndexError, TypeError):
                         content = ""
                     if content:
+                        content = self._strip_dsml(content)
+                        if not content:
+                            continue
                         yield json.dumps({"type": "message_chunk", "data": {"content": content}}, ensure_ascii=False)
